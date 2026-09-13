@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Install validation tools
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Verify tag matches VERSION
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" != "v${VERSION}" ]]; then
+            echo "ERROR: Tag $TAG does not match VERSION v${VERSION}"
+            exit 1
+          fi
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n vps-security.sh
+          bash -n install.sh
+          bash -n tools/build-copy-paste.sh
+          bash -n tests/smoke.sh
+          shellcheck -x -S error             vps-security.sh             install.sh             tools/build-copy-paste.sh             tests/smoke.sh
+          bash tests/smoke.sh
+          python3 tests/static_safety.py
+          git diff --check
+
+      - name: Rebuild distribution
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash tools/build-copy-paste.sh
+          git diff --exit-code -- dist/vps-security-copy-paste.txt dist/SHA256SUMS
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          cp vps-security.sh "vps-security-v${VERSION}.sh"
+          cp dist/vps-security-copy-paste.txt "vps-security-v${VERSION}-copy-paste.txt"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          TAG="v${VERSION}"
+          NOTES="release-notes/${TAG}.md"
+
+          if [[ ! -f "$NOTES" ]]; then
+            echo "ERROR: Missing release notes: $NOTES"
+            exit 1
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG"               --title "VPS Security Bootstrap ${TAG}"               --notes-file "$NOTES"
+          else
+            gh release create "$TAG"               --title "VPS Security Bootstrap ${TAG}"               --notes-file "$NOTES"
+          fi
+
+          gh release upload "$TAG"             "vps-security-v${VERSION}.sh"             "vps-security-v${VERSION}-copy-paste.txt"             dist/SHA256SUMS             --clobber
