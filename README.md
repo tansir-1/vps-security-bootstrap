@@ -225,6 +225,8 @@ MIT
 <a id="english"></a>
 ## English
 
+[返回简体中文](#简体中文)
+
 > An interactive Debian/Ubuntu VPS bootstrap and hardening tool for both fresh servers and already-deployed production servers.
 
 Core principles:
