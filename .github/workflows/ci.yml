@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Bash syntax
+        run: |
+          bash -n vps-security.sh
+          bash -n tools/build-copy-paste.sh
+          bash -n tests/smoke.sh
+
+      - name: ShellCheck high-priority errors
+        run: shellcheck -x -S error vps-security.sh tools/build-copy-paste.sh tests/smoke.sh
+
+      - name: Smoke tests
+        run: bash tests/smoke.sh
+
+      - name: Rebuild copy-paste distribution
+        run: |
+          bash tools/build-copy-paste.sh
+          git diff --exit-code -- dist/vps-security-copy-paste.txt dist/SHA256SUMS
