@@ -1,5 +1,7 @@
 # VPS Security Bootstrap
 
+[简体中文](./README.md) | [English](./README_EN.md)
+
 > 面向 Debian / Ubuntu 的交互式 VPS 新机开荒与已部署服务器安全加固工具。
 
 核心原则：
@@ -56,13 +58,11 @@
 安全工具建议先下载并检查源码：
 
 ```bash
-curl -fLO https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/vps-security-bootstrap/main/vps-security.sh
+curl -fLO https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/main/vps-security.sh
 bash -n vps-security.sh
 less vps-security.sh
 sudo bash vps-security.sh
 ```
-
-将 `YOUR_GITHUB_USERNAME` 替换为你的 GitHub 用户名。
 
 ### Netcatty / Xshell / FinalShell 复制粘贴方式
 
@@ -111,7 +111,7 @@ Copy-Paste 版本会：
 
 新窗口测试失败时可整体回滚，避免留下“SSH 恢复了但 Fail2ban / 防火墙还指向新端口”的半配置状态。
 
-> 修改 SSH 时仍强烈建议保留 IDC/VNC/Serial Console 等救援入口。
+> 修改 SSH 时仍强烈建议保留 IDC / VNC / Serial Console 等救援入口。
 
 ## 防火墙原则
 
