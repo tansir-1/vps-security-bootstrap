@@ -1,0 +1,244 @@
+name: One-shot upgrade to v10.0.1
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/upgrade-v10.0.1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Install validation tools
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Restore audited upgrade script
+        shell: bash
+        run: |
+          cat > /tmp/upgrade-v10.0.1.py.gz.b64 <<'PAYLOAD'
+          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
+          ZtYA+aO/1IjXz+Je5/8BXCVEe2J1AAA=
+          PAYLOAD
+          base64 -d /tmp/upgrade-v10.0.1.py.gz.b64 | gzip -dc > /tmp/upgrade-v10.0.1.py
+          echo "5e24a0211fc461d3b11fa2db9dc9bf1d97c36eb4e09f973c376f7fb6358df4e2  /tmp/upgrade-v10.0.1.py" | sha256sum -c -
+          python3 -m py_compile /tmp/upgrade-v10.0.1.py
+
+      - name: Apply v10.0.1 audit fixes
+        run: |
+          cp /tmp/upgrade-v10.0.1.py tools/upgrade-v10.0.1.py
+          python3 tools/upgrade-v10.0.1.py
+          rm -f tools/upgrade-v10.0.1.py
+
+      - name: Rebuild distribution
+        run: bash tools/build-copy-paste.sh
+
+      - name: Validate upgraded repository
+        run: |
+          bash -n vps-security.sh
+          bash -n install.sh
+          bash -n tools/build-copy-paste.sh
+          bash -n tests/smoke.sh
+          shellcheck -x -S error vps-security.sh install.sh tools/build-copy-paste.sh tests/smoke.sh
+          bash tests/smoke.sh
+          python3 tests/static_safety.py
+          git diff --check
+
+      - name: Remove one-shot upgrader
+        run: rm -f .github/workflows/upgrade-v10.0.1.yml
+
+      - name: Commit upgraded repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release v10.0.1 audit hardening"
+          git push origin HEAD:main
+
+      - name: Create v10.0.1 release assets
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          TAG="v$VERSION"
+          mkdir -p /tmp/vps-security-release
+          cp vps-security.sh "/tmp/vps-security-release/vps-security-v${VERSION}.sh"
+          cp dist/vps-security-copy-paste.txt "/tmp/vps-security-release/vps-security-v${VERSION}-copy-paste.txt"
+          (
+            cd /tmp/vps-security-release
+            sha256sum "vps-security-v${VERSION}.sh" \
+                      "vps-security-v${VERSION}-copy-paste.txt" > SHA256SUMS
+          )
+          git tag -a "$TAG" -m "VPS Security Bootstrap $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            "/tmp/vps-security-release/vps-security-v${VERSION}.sh" \
+            "/tmp/vps-security-release/vps-security-v${VERSION}-copy-paste.txt" \
+            "/tmp/vps-security-release/SHA256SUMS" \
+            --title "VPS Security Bootstrap $TAG" \
+            --notes-file "release-notes/$TAG.md" \
+            --latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Summary
+        run: |
+          echo "### VPS Security Bootstrap v10.0.1" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Audit fixes applied" >> "$GITHUB_STEP_SUMMARY"
+          echo "- CI-equivalent validation passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- main updated" >> "$GITHUB_STEP_SUMMARY"
+          echo "- v10.0.1 tag and Release created" >> "$GITHUB_STEP_SUMMARY"
