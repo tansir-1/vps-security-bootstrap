@@ -1,5 +1,24 @@
 # Changelog
 
+## v10.0.1 - 2026-09
+
+### Security / Reliability
+- 修正 UFW 已安装但未启用时对自定义 nftables 的识别优先级。
+- 增加自定义 iptables INPUT 规则检测，并保持只读保护。
+- firewalld 改为优先识别默认路由网卡实际所在的 active zone。
+- install.sh 与 Copy-Paste 包改用随机 mktemp 临时文件并自动清理。
+- Copy-Paste 包在独立子 Shell 中运行，校验失败不会退出当前 SSH 会话。
+- SSH 切换成功后不再静默删除旧端口防火墙规则，改为显式询问。
+- SSH 事务可恢复“原本不存在 authorized_keys”的状态。
+- 修正 UFW 未启用时 IPv6 防火墙状态误报为已覆盖的问题。
+- Fail2ban sshd jail 新增实际端口生效验证。
+
+### CI / Release
+- CI 纳入 install.sh 的 Bash/ShellCheck 检查。
+- 新增静态安全不变量测试。
+- actions/checkout 固定到 v7 对应 commit SHA。
+- 新增自动 Release 工作流，VERSION 升级且验证通过后生成带 SHA256SUMS 的正式附件。
+
 ## v10.0.0 - 2026-09
 
 ### Added

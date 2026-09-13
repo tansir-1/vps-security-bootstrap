@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# VPS Security Bootstrap v10.0.0
+# VPS Security Bootstrap v10.0.1
 # 面向 Debian / Ubuntu：全新 VPS 开荒 + 已部署业务服务器安全加固。
 # 核心原则：不锁 SSH、不误关业务端口、不自动覆盖已有 DENY、关键改动可验证/可回滚。
 (
 set -Euo pipefail
 
-VERSION="10.0.0"
+VERSION="10.0.1"
 APP_NAME="VPS Security Bootstrap v${VERSION}"
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 CLI_AUDIT=0
@@ -265,6 +265,20 @@ is_custom_nftables_active() {
     rules="$(nft list ruleset 2>/dev/null || true)"
     grep -Eq 'hook[[:space:]]+input' <<<"$rules"
 }
+is_custom_iptables_active() {
+    command -v iptables >/dev/null 2>&1 || return 1
+    local policy rules
+    policy="$(iptables -S INPUT 2>/dev/null | head -n1 || true)"
+    if grep -Eq '^-P[[:space:]]+INPUT[[:space:]]+(DROP|REJECT)$' <<<"$policy"; then
+        return 0
+    fi
+    rules="$(iptables -S INPUT 2>/dev/null \
+        | grep '^-A INPUT ' \
+        | grep -Ev ' -j (ufw-|f2b-|fail2ban)' \
+        || true)"
+    [[ -n "$rules" ]]
+}
+
 detect_firewall_backend() {
     if is_firewalld_active && is_ufw_active; then
         printf 'conflict'
@@ -272,10 +286,12 @@ detect_firewall_backend() {
         printf 'firewalld'
     elif is_ufw_active; then
         printf 'ufw'
-    elif is_ufw_installed; then
-        printf 'ufw-inactive'
     elif is_custom_nftables_active; then
         printf 'nftables'
+    elif is_custom_iptables_active; then
+        printf 'iptables'
+    elif is_ufw_installed; then
+        printf 'ufw-inactive'
     else
         printf 'none'
     fi
@@ -294,7 +310,21 @@ ufw_rule_state() {
     fi
 }
 
-firewalld_zone() { firewall-cmd --get-default-zone 2>/dev/null || printf 'public'; }
+firewalld_zone() {
+    local iface zone
+    iface="$(ip -4 route show default 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')"
+    [[ -n "$iface" ]] || iface="$(ip -6 route show default 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')"
+    if [[ -n "$iface" ]]; then
+        zone="$(firewall-cmd --get-zone-of-interface="$iface" 2>/dev/null || true)"
+        if [[ -n "$zone" && "$zone" != "no zone" ]]; then
+            printf '%s' "$zone"
+            return 0
+        fi
+    fi
+    zone="$(firewall-cmd --get-default-zone 2>/dev/null || true)"
+    [[ -n "$zone" ]] || zone='public'
+    printf '%s' "$zone"
+}
 
 run_step() {
     local title="$1" fn="$2" rc choice
@@ -738,8 +768,9 @@ status_firewall() {
     case "$b" in
         ufw) printf 'UFW 已启用' ;;
         ufw-inactive) printf 'UFW 已安装/未启用' ;;
-        firewalld) printf 'firewalld 运行中' ;;
+        firewalld) printf 'firewalld 运行中（zone=%s）' "$(firewalld_zone)" ;;
         nftables) printf '自定义 nftables（只读）' ;;
+        iptables) printf '自定义 iptables（只读）' ;;
         conflict) printf '⚠ UFW + firewalld 同时启用' ;;
         none) printf '未检测到主机防火墙' ;;
     esac
@@ -800,11 +831,17 @@ status_ipv6() {
 status_ipv6_firewall() {
     if ! has_global_ipv6; then printf '不适用'; return; fi
     case "$(detect_firewall_backend)" in
-        ufw|ufw-inactive)
-            if grep -Eq '^IPV6=yes' /etc/default/ufw 2>/dev/null; then printf 'UFW 已覆盖'; else printf '⚠ UFW 未覆盖'; fi
+        ufw)
+            if grep -Eq '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
+                printf 'UFW 已启用并覆盖 IPv6'
+            else
+                printf '⚠ UFW 已启用，但 IPv6 未覆盖'
+            fi
             ;;
-        firewalld) printf 'firewalld 双栈管理' ;;
+        ufw-inactive) printf '⚠ UFW 未启用，IPv6 未受 UFW 实际保护' ;;
+        firewalld) printf 'firewalld 双栈管理（需结合 zone 规则确认）' ;;
         nftables) printf '自定义 nftables（需人工确认）' ;;
+        iptables) printf '自定义 iptables（IPv6 需另查 ip6tables/nftables）' ;;
         conflict) printf '⚠ 防火墙后端冲突' ;;
         none) printf '⚠ 未检测到主机防火墙' ;;
     esac
@@ -848,6 +885,7 @@ status_port_manager() {
         ufw-inactive) printf 'UFW 待启用' ;;
         firewalld) printf 'firewalld 可用' ;;
         nftables) printf '自定义 nftables：只读' ;;
+        iptables) printf '自定义 iptables：只读' ;;
         conflict) printf '⚠ UFW/firewalld 冲突' ;;
         none) printf '未配置' ;;
     esac
@@ -914,10 +952,15 @@ begin_ssh_transaction() {
         cp -a /etc/ssh/sshd_config.d "$dir/"
         printf '1\n' > "$dir/had-sshd-config-d"
     fi
+    if [[ -d /root/.ssh ]]; then
+        printf '1\n' > "$dir/had-root-ssh-dir"
+    fi
     if [[ -f /root/.ssh/authorized_keys ]]; then
         mkdir -p "$dir/root-ssh"
         cp -a /root/.ssh/authorized_keys "$dir/root-ssh/authorized_keys"
         printf '1\n' > "$dir/had-authorized-keys"
+    else
+        printf '1\n' > "$dir/had-no-authorized-keys"
     fi
     if [[ -f "$STATE_FILE" ]]; then cp -a "$STATE_FILE" "$dir/state.env"; fi
 
@@ -1001,6 +1044,12 @@ rollback_ssh_transaction() {
         cp -a "$dir/root-ssh/authorized_keys" /root/.ssh/authorized_keys
         chmod 700 /root/.ssh
         chmod 600 /root/.ssh/authorized_keys
+        chown -R root:root /root/.ssh
+    elif [[ -f "$dir/had-no-authorized-keys" ]]; then
+        rm -f /root/.ssh/authorized_keys
+        if [[ ! -f "$dir/had-root-ssh-dir" ]]; then
+            rmdir /root/.ssh 2>/dev/null || true
+        fi
     fi
 
     if [[ -f "$dir/had-fail2ban-file" ]]; then
@@ -1174,10 +1223,10 @@ allow_ssh_port_in_firewall() {
             firewall-cmd --permanent --zone="$zone" --add-port="$port/tcp" >/dev/null || return 1
             say "✅ firewalld 已放行新的 SSH 端口：$port/tcp（zone=$zone）"
             ;;
-        nftables)
-            say "⚠️ 检测到自定义 nftables。本工具不会自动修改自定义规则。"
-            say "请确认你的 nftables 已允许 TCP $port，否则修改 SSH 后可能无法新建连接。"
-            if ! confirm_y "你已经确认 nftables/外部防火墙允许 TCP $port，并继续？"; then
+        nftables|iptables)
+            say "⚠️ 检测到自定义 $backend。本工具不会自动修改自定义规则。"
+            say "请确认你的 $backend/外部防火墙已允许 TCP $port，否则修改 SSH 后可能无法新建连接。"
+            if ! confirm_y "你已经确认 $backend/外部防火墙允许 TCP $port，并继续？"; then
                 return 2
             fi
             ;;
@@ -1193,27 +1242,54 @@ allow_ssh_port_in_firewall() {
 }
 
 remove_old_ssh_firewall_rule() {
-    local old="$1" new="$2" backend zone
+    local old="$1" new="$2" backend zone choice
     [[ -n "$old" && "$old" != "$new" ]] || return 0
     backend="$(detect_firewall_backend)"
     case "$backend" in
         ufw|ufw-inactive)
-            # 只删除本工具通常创建的简单 ALLOW；不碰 DENY 和复杂来源规则。
-            ufw delete allow "$old/tcp" >/dev/null 2>&1 || true
+            if [[ "$(ufw_rule_state "$old" tcp)" == 'allow' ]]; then
+                say
+                say "旧 SSH 端口 $old/tcp 仍存在 ALLOW 规则。"
+                say "为避免误删你原本手工创建的规则，本工具不会静默删除。"
+                say '1. 保留旧端口规则（默认）'
+                say '2. 删除简单 ALLOW 规则'
+                choose_num choice '请选择 [默认1]：' '1 2' '1'
+                if [[ "$choice" == '2' ]]; then
+                    ufw delete allow "$old/tcp" >/dev/null 2>&1 || true
+                    say "✅ 已尝试删除旧 SSH 端口 ALLOW：$old/tcp"
+                else
+                    say "ℹ️ 已保留旧 SSH 端口防火墙规则：$old/tcp"
+                fi
+            fi
             ;;
         firewalld)
             zone="$(firewalld_zone)"
-            firewall-cmd --zone="$zone" --remove-port="$old/tcp" >/dev/null 2>&1 || true
-            firewall-cmd --permanent --zone="$zone" --remove-port="$old/tcp" >/dev/null 2>&1 || true
+            if firewall-cmd --zone="$zone" --query-port="$old/tcp" >/dev/null 2>&1; then
+                say
+                say "旧 SSH 端口 $old/tcp 仍在 firewalld zone=$zone 中放行。"
+                say '1. 保留旧端口规则（默认）'
+                say '2. 删除旧端口放行'
+                choose_num choice '请选择 [默认1]：' '1 2' '1'
+                if [[ "$choice" == '2' ]]; then
+                    firewall-cmd --zone="$zone" --remove-port="$old/tcp" >/dev/null 2>&1 || true
+                    firewall-cmd --permanent --zone="$zone" --remove-port="$old/tcp" >/dev/null 2>&1 || true
+                    firewall-cmd --reload >/dev/null 2>&1 || true
+                    say "✅ 已删除旧 SSH 端口放行：$old/tcp"
+                else
+                    say "ℹ️ 已保留旧 SSH 端口防火墙规则：$old/tcp"
+                fi
+            fi
             ;;
         *) : ;;
     esac
 }
 update_fail2ban_ssh_port() {
-    local port="$1"
-    if command -v fail2ban-client >/dev/null 2>&1 && [[ -d /etc/fail2ban ]]; then
-        mkdir -p /etc/fail2ban/jail.d
-        cat > /etc/fail2ban/jail.d/vps-security-sshd.local <<EOF
+    local port="$1" actual
+    if ! command -v fail2ban-client >/dev/null 2>&1 || [[ ! -d /etc/fail2ban ]]; then
+        return 0
+    fi
+    mkdir -p /etc/fail2ban/jail.d
+    cat > /etc/fail2ban/jail.d/vps-security-sshd.local <<EOF
 [sshd]
 enabled = true
 backend = systemd
@@ -1222,8 +1298,21 @@ maxretry = 5
 findtime = 10m
 bantime = 1h
 EOF
-        systemctl restart fail2ban >/dev/null 2>&1 || true
+    if ! systemctl restart fail2ban >/dev/null 2>&1; then
+        say '❌ Fail2ban 重启失败。'
+        return 1
     fi
+    sleep 1
+    if ! fail2ban-client status sshd >/dev/null 2>&1; then
+        say '❌ Fail2ban sshd jail 未正常运行。'
+        return 1
+    fi
+    actual="$(fail2ban-client get sshd port 2>/dev/null || true)"
+    if ! grep -Eq "(^|[ ,])${port}([ ,]|$)" <<<"$actual"; then
+        say "❌ Fail2ban sshd jail 端口校验失败：期望 $port，实际 ${actual:-未知}"
+        return 1
+    fi
+    say "✅ Fail2ban sshd jail 已验证使用端口：$port"
 }
 
 detect_business_services() {
@@ -1392,7 +1481,11 @@ step3_random_ssh_port() {
     SSH_PORT="$new"
     PASSWORD_LOCKED="$locked"
     save_state
-    update_fail2ban_ssh_port "$new" || true
+    if ! update_fail2ban_ssh_port "$new"; then
+        say "❌ Fail2ban 未能同步到新的 SSH 端口，正在完整回滚..."
+        rollback_ssh_transaction "$txn"
+        return 1
+    fi
     log "SSH 端口从 $current 修改为 $new；等待新窗口测试；事务 $txn"
 
     say
@@ -1639,11 +1732,11 @@ step7_configure_ufw() {
             firewall-cmd --zone="$zone" --list-all >&4 || true
             return 0
             ;;
-        nftables)
-            say "⚠️ 检测到自定义 nftables。"
-            say "为避免破坏已有规则，本工具不会自动修改 nftables。"
-            say "你可以使用‘只读安全检查’查看当前风险，并人工维护 /etc/nftables.conf。"
-            log "检测到自定义 nftables，跳过自动防火墙修改"
+        nftables|iptables)
+            say "⚠️ 检测到自定义 $backend。"
+            say '为避免破坏已有规则，本工具不会自动修改该防火墙。'
+            say '你可以使用“只读安全检查”查看当前风险，并人工维护现有规则。'
+            log "检测到自定义 $backend，跳过自动防火墙修改"
             return 0
             ;;
         none|ufw-inactive|ufw)
@@ -1693,30 +1786,22 @@ step7_configure_ufw() {
 }
 step8_install_fail2ban() {
     say
-    say "=================================================="
-    say "8. 安装 Fail2ban"
-    say "=================================================="
-
+    say '=================================================='
+    say '8. 安装 Fail2ban'
+    say '=================================================='
     local port
     port="$(get_primary_ssh_port)"
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y fail2ban
-    mkdir -p /etc/fail2ban/jail.d
-    cat > /etc/fail2ban/jail.d/vps-security-sshd.local <<EOF
-[sshd]
-enabled = true
-backend = systemd
-port = $port
-maxretry = 5
-findtime = 10m
-bantime = 1h
-EOF
-    systemctl enable --now fail2ban
-    sleep 1
-    log "Fail2ban 已启用，SSH 端口 $port"
-    say "✅ Fail2ban 已安装并启用。"
-    fail2ban-client status sshd >&4 2>/dev/null || systemctl status fail2ban --no-pager -l >&4 || true
+    apt-get update || return 1
+    apt-get install -y fail2ban || return 1
+    systemctl enable fail2ban >/dev/null 2>&1 || true
+    if ! update_fail2ban_ssh_port "$port"; then
+        say '❌ Fail2ban 已安装，但 sshd jail 未通过端口验证。'
+        return 1
+    fi
+    log "Fail2ban 已启用并验证，SSH 端口 $port"
+    say '✅ Fail2ban 已安装、启用并验证。'
+    fail2ban-client status sshd >&4 2>/dev/null || true
 }
 
 step9_enable_auto_updates() {
@@ -1901,23 +1986,23 @@ ensure_firewall_manager_ready() {
     local b
     b="$(detect_firewall_backend)"
     case "$b" in
-        conflict) say "❌ UFW 与 firewalld 同时启用，拒绝自动端口修改。"; return 1 ;;
+        conflict) say '❌ UFW 与 firewalld 同时启用，拒绝自动端口修改。'; return 1 ;;
         ufw|firewalld) return 0 ;;
         ufw-inactive)
-            say "UFW 已安装但未启用。"
-            if confirm_y "现在安全启用 UFW，并先保护当前 SSH/业务端口？"; then
+            say 'UFW 已安装但未启用。'
+            if confirm_y '现在安全启用 UFW，并先保护当前 SSH/业务端口？'; then
                 step7_configure_ufw
             else
                 return 1
             fi
             ;;
-        nftables)
-            say "⚠️ 检测到自定义 nftables。为避免破坏规则，端口管理只提供查看，不自动增删。"
+        nftables|iptables)
+            say "⚠️ 检测到自定义 $b。为避免破坏规则，端口管理只提供查看，不自动增删。"
             return 2
             ;;
         none)
-            say "未检测到主机防火墙。"
-            if confirm_y "是否安装并启用 UFW？"; then
+            say '未检测到主机防火墙。'
+            if confirm_y '是否安装并启用 UFW？'; then
                 step7_configure_ufw
             else
                 return 1
@@ -2050,12 +2135,17 @@ step13_port_firewall_manager() {
     local ready=0 b c ports psel proto
     ensure_firewall_manager_ready || ready=$?
     b="$(detect_firewall_backend)"
-    if (( ready == 2 )) || [[ "$b" == "nftables" ]]; then
+    if (( ready == 2 )) || [[ "$b" == "nftables" || "$b" == "iptables" ]]; then
         say
-        say "=================================================="
-        say "自定义 nftables（只读）"
-        say "=================================================="
-        nft list ruleset >&4 2>/dev/null || true
+        say '=================================================='
+        say "自定义 $b（只读）"
+        say '=================================================='
+        if [[ "$b" == 'nftables' ]]; then
+            nft list ruleset >&4 2>/dev/null || true
+        else
+            iptables -S >&4 2>/dev/null || true
+            command -v ip6tables >/dev/null 2>&1 && ip6tables -S >&4 2>/dev/null || true
+        fi
         pause
         return 0
     elif (( ready != 0 )); then
@@ -2088,6 +2178,7 @@ step13_port_firewall_manager() {
                     ufw|ufw-inactive) ufw status numbered >&4 ;;
                     firewalld) firewall-cmd --list-all-zones >&4 ;;
                     nftables) nft list ruleset >&4 ;;
+                    iptables) iptables -S >&4; command -v ip6tables >/dev/null 2>&1 && ip6tables -S >&4 2>/dev/null || true ;;
                     *) say "未配置主机防火墙。" ;;
                 esac
                 ;;
@@ -2154,6 +2245,7 @@ audit_readonly() {
         firewalld) audit_emit PASS "主机防火墙" "firewalld 运行中" ;;
         ufw-inactive) audit_emit WARN "主机防火墙" "UFW 已安装但未启用" ;;
         nftables) audit_emit INFO "主机防火墙" "自定义 nftables，需人工审计" ;;
+        iptables) audit_emit INFO "主机防火墙" "自定义 iptables，需人工审计" ;;
         conflict) audit_emit FAIL "主机防火墙" "UFW 与 firewalld 同时启用，存在策略冲突风险" ;;
         none) audit_emit WARN "主机防火墙" "未检测到 UFW/firewalld" ;;
     esac
@@ -2333,6 +2425,7 @@ ipv6_firewall_manager() {
             ;;
         firewalld) say "firewalld 通常同时管理 IPv4/IPv6；请使用只读审计确认 zone/rich rules。" ;;
         nftables) say "自定义 nftables：本工具不自动修改 IPv6 规则。" ;;
+        iptables) say "自定义 iptables：请同时人工检查 ip6tables/nftables 的 IPv6 规则。" ;;
         none) say "⚠️ 没有主机防火墙。可先从第 7 项配置 UFW。" ;;
     esac
 }

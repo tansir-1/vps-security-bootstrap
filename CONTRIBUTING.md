@@ -11,13 +11,15 @@
 
 ```bash
 bash -n vps-security.sh
+bash -n install.sh
 bash -n tools/build-copy-paste.sh
 bash tests/smoke.sh
+python3 tests/static_safety.py
 bash tools/build-copy-paste.sh
 ```
 
 如安装了 ShellCheck：
 
 ```bash
-shellcheck -x -S error vps-security.sh tools/build-copy-paste.sh tests/smoke.sh
+shellcheck -x -S error vps-security.sh install.sh tools/build-copy-paste.sh tests/smoke.sh
 ```

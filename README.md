@@ -14,11 +14,11 @@
 
 **不锁 SSH、不误关业务端口、不静默覆盖已有 DENY、关键改动可验证/可回滚。**
 
-当前版本：`v10.0.0`
+当前版本：`v10.0.1`
 
 ## 快速开始
 
-### 推荐：一键运行固定版本 v10.0.0
+### 推荐：一键运行固定版本 v10.0.1
 
 适合大多数用户，脚本会下载正式 Release、校验 SHA256、执行 Bash 语法检查，通过后才启动。
 
@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/mai
 ### 直接运行 Release 主脚本
 
 ```bash
-curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.0.0/vps-security-v10.0.0.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
+curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.0.1/vps-security-v10.0.1.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
 ```
 
 ### 下载源码后检查再运行
@@ -106,7 +106,7 @@ Copy-Paste 版本会：
 - SSH 高风险变更事务式备份、验证与回滚
 - ssh.service / ssh.socket 状态处理
 - UFW / firewalld 自动识别
-- 自定义 nftables 只读保护
+- 自定义 nftables / iptables 只读保护
 - 已有 UFW DENY 冲突保护
 - Fail2ban
 - unattended-upgrades 自动安全更新
@@ -179,7 +179,7 @@ Copy-Paste 版本会：
 
 Docker 发布端口可能绕过普通 UFW `INPUT` 链。
 
-v10.0.0 默认以**审计**为主：
+v10.0.1 默认以**审计**为主：
 
 - 查看公网映射
 - 查看绑定地址
@@ -305,7 +305,7 @@ dist/SHA256SUMS
 当前正式版本：
 
 ```text
-v10.0.0
+v10.0.1
 ```
 
 生产环境建议优先使用固定 Release，而不是直接运行 `main` 分支。
@@ -328,11 +328,11 @@ Core principles:
 
 **Do not lock out SSH. Do not accidentally close business ports. Do not silently overwrite existing DENY rules. Make risky changes verifiable and recoverable.**
 
-Current version: `v10.0.0`
+Current version: `v10.0.1`
 
 ## Quick Start
 
-### Recommended: run the pinned v10.0.0 release
+### Recommended: run the pinned v10.0.1 release
 
 For root users:
 
@@ -351,7 +351,7 @@ The installer downloads the official Release asset, verifies the pinned SHA256, 
 ### Run the Release script directly
 
 ```bash
-curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.0.0/vps-security-v10.0.0.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
+curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.0.1/vps-security-v10.0.1.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
 ```
 
 ### Download, inspect, and run the source
@@ -416,7 +416,7 @@ Option `0` exits only the tool and does not intentionally close the current SSH 
 - Transactional backup, verification, and rollback for SSH changes
 - ssh.service / ssh.socket handling
 - Automatic UFW / firewalld detection
-- Read-only protection for custom nftables rules
+- Read-only protection for custom nftables / iptables rules
 - Existing UFW DENY conflict protection
 - Fail2ban
 - Automatic security updates with unattended-upgrades
@@ -487,7 +487,7 @@ Conflicts require an explicit user decision.
 
 Docker-published ports may bypass normal UFW `INPUT` handling.
 
-v10.0.0 focuses on auditing:
+v10.0.1 focuses on auditing:
 
 - Public mappings
 - Bind addresses
@@ -615,7 +615,7 @@ Do not publish the following in Issues, screenshots, logs, or chats:
 Current stable release:
 
 ```text
-v10.0.0
+v10.0.1
 ```
 
 For production servers, use a pinned Release rather than the moving `main` branch.
