@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
@@ -21,16 +21,24 @@ jobs:
       - name: Bash syntax
         run: |
           bash -n vps-security.sh
+          bash -n install.sh
           bash -n tools/build-copy-paste.sh
           bash -n tests/smoke.sh
 
       - name: ShellCheck high-priority errors
-        run: shellcheck -x -S error vps-security.sh tools/build-copy-paste.sh tests/smoke.sh
+        run: |
+          shellcheck -x -S error             vps-security.sh             install.sh             tools/build-copy-paste.sh             tests/smoke.sh
 
       - name: Smoke tests
         run: bash tests/smoke.sh
+
+      - name: Static safety tests
+        run: python3 tests/static_safety.py
 
       - name: Rebuild copy-paste distribution
         run: |
           bash tools/build-copy-paste.sh
           git diff --exit-code -- dist/vps-security-copy-paste.txt dist/SHA256SUMS
+
+      - name: Check whitespace errors
+        run: git diff --check
