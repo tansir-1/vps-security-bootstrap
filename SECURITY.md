@@ -2,7 +2,7 @@
 
 ## Supported version
 
-当前维护：v10.x（当前稳定版：v10.0.1）
+当前维护：v10.x（当前稳定版：v10.0.2）
 
 ## Reporting a vulnerability
 

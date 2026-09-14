@@ -1,5 +1,12 @@
 # Changelog
 
+## v10.0.2 - 2026-09
+
+### Fixed
+- 修复 Debian 12 / Fail2ban 1.0.2 不支持 `fail2ban-client get sshd port`，导致安装 Fail2ban 和修改 SSH 端口被误判失败的问题。
+- Fail2ban 端口同步现在通过完整配置检查、服务重启和 sshd jail 状态进行验证。
+- 固定 Bash、测试和发行文件使用 LF 换行，避免 Windows Git 检出后破坏语法检查和 SHA256。
+
 ## v10.0.1 - 2026-09
 
 ### Security / Reliability
