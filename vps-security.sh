@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# VPS Security Bootstrap v10.0.2
-# 面向 Debian / Ubuntu：全新 VPS 开荒 + 已部署业务服务器安全加固。
+# VPS Security Bootstrap v10.1.0
+# 面向常用 systemd VPS Linux：全新 VPS 开荒 + 已部署业务服务器安全加固。
 # 核心原则：不锁 SSH、不误关业务端口、不自动覆盖已有 DENY、关键改动可验证/可回滚。
 (
 set -Euo pipefail
 
-VERSION="10.0.2"
+VERSION="10.1.0"
 APP_NAME="VPS Security Bootstrap v${VERSION}"
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 CLI_AUDIT=0
@@ -28,7 +28,8 @@ VPS Security Bootstrap
   bash vps-security.sh --version
   bash vps-security.sh --help
 
-支持：Debian / Ubuntu（apt 系）
+支持：Debian、Ubuntu、RHEL、CentOS Stream、Rocky Linux、AlmaLinux、
+      Oracle Linux、Fedora、Amazon Linux（systemd）
 EOF
         exit 0
         ;;
@@ -60,11 +61,13 @@ TXN_ROOT="$BASE_DIR/transactions"
 PREFLIGHT_ROOT="$BASE_DIR/preflight"
 PROTECTED_PORTS_FILE="$BASE_DIR/protected-ports.tsv"
 LAST_PREFLIGHT_LINK="$PREFLIGHT_ROOT/latest"
+IPV6_SYSCTL_FILE="/etc/sysctl.d/99-vps-security-ipv6.conf"
 SSHD_CONFIG="/etc/ssh/sshd_config"
 MANAGED_BEGIN="# BEGIN VPS-SECURITY-BOOTSTRAP"
 MANAGED_END="# END VPS-SECURITY-BOOTSTRAP"
 KEEPALIVE_ENABLED="0"
 PREFLIGHT_DONE="0"
+FULL_SKIP_PREFLIGHT="0"
 LAST_PREFLIGHT=""
 LAST_AUDIT=""
 SSH_TXN_DIR=""
@@ -109,9 +112,101 @@ choose_num() {
 pause() { local _x; say; ask _x "按回车继续..."; }
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "$LOG_FILE"; }
 
+OS_ID=""
+OS_ID_LIKE=""
+OS_VERSION_ID=""
+OS_PRETTY_NAME="Unknown Linux"
+OS_FAMILY=""
+PKG_MANAGER=""
+
+detect_platform() {
+    local ID="" ID_LIKE="" VERSION_ID="" PRETTY_NAME="" VERSION=""
+    [[ -r /etc/os-release ]] || { say "❌ 无法读取 /etc/os-release，不能识别系统。"; return 1; }
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    OS_ID="${ID:-unknown}"
+    OS_ID_LIKE="${ID_LIKE:-}"
+    OS_VERSION_ID="${VERSION_ID:-unknown}"
+    OS_PRETTY_NAME="${PRETTY_NAME:-$OS_ID}"
+
+    case "$OS_ID" in
+        debian|ubuntu) OS_FAMILY="debian" ;;
+        rhel|centos|rocky|almalinux|ol|fedora|amzn) OS_FAMILY="rhel" ;;
+        *)
+            if [[ " $OS_ID_LIKE " == *" debian "* || " $OS_ID_LIKE " == *" ubuntu "* ]]; then
+                OS_FAMILY="debian"
+            elif [[ " $OS_ID_LIKE " == *" rhel "* || " $OS_ID_LIKE " == *" fedora "* || " $OS_ID_LIKE " == *" centos "* ]]; then
+                OS_FAMILY="rhel"
+            else
+                say "❌ 暂不支持此系统：$OS_PRETTY_NAME"
+                say "支持 Debian/Ubuntu 和 RHEL/Fedora 系的 systemd 发行版。"
+                return 1
+            fi
+            ;;
+    esac
+
+    if [[ "$OS_FAMILY" == "debian" ]] && command -v apt-get >/dev/null 2>&1; then
+        PKG_MANAGER="apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        PKG_MANAGER="dnf"
+    elif [[ "$OS_FAMILY" == "rhel" ]] && command -v yum >/dev/null 2>&1; then
+        PKG_MANAGER="yum"
+    else
+        say "❌ 系统已识别为 $OS_PRETTY_NAME，但没有找到可用的 apt-get/dnf/yum。"
+        return 1
+    fi
+}
+
+pkg_refresh() {
+    case "$PKG_MANAGER" in
+        apt) DEBIAN_FRONTEND=noninteractive apt-get update ;;
+        dnf) dnf -y makecache ;;
+        yum) yum -y makecache ;;
+        *) return 1 ;;
+    esac
+}
+
+pkg_install() {
+    (($# > 0)) || return 0
+    case "$PKG_MANAGER" in
+        apt) DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+        dnf) dnf -y install "$@" ;;
+        yum) yum -y install "$@" ;;
+        *) return 1 ;;
+    esac
+}
+
+pkg_upgrade_system() {
+    case "$PKG_MANAGER" in
+        apt)
+            DEBIAN_FRONTEND=noninteractive apt-get update &&
+                DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+            ;;
+        dnf)
+            if [[ "$OS_ID" == "amzn" && "$OS_VERSION_ID" == 2023* ]]; then
+                dnf -y upgrade --releasever=latest
+            else
+                dnf -y upgrade --refresh
+            fi
+            ;;
+        yum) yum -y update ;;
+        *) return 1 ;;
+    esac
+}
+
+package_installed() {
+    local package="$1"
+    case "$OS_FAMILY" in
+        debian) dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'ok installed' ;;
+        rhel) rpm -q "$package" >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
+detect_platform || exit 1
+
 if ! command -v apt-get >/dev/null 2>&1; then
-    say "❌ 当前版本仅支持 Debian/Ubuntu（apt 系）。"
-    exit 1
+    [[ "$OS_FAMILY" != "debian" ]] || { say "❌ Debian/Ubuntu 系统未找到 apt-get。"; exit 1; }
 fi
 if ! command -v systemctl >/dev/null 2>&1; then
     say "❌ 当前系统未检测到 systemd/systemctl，本工具暂不支持。"
@@ -119,11 +214,16 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 check_dependencies() {
-    local -A pkg_for=(
-        [ss]="iproute2" [ip]="iproute2" [shuf]="coreutils" [base64]="coreutils"
-        [gzip]="gzip" [ssh-keygen]="openssh-client" [awk]="gawk" [sed]="sed"
-        [grep]="grep" [sort]="coreutils" [tar]="tar" [hostname]="hostname"
-    )
+    local -A pkg_for=()
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+        pkg_for=([ss]="iproute2" [ip]="iproute2" [shuf]="coreutils" [base64]="coreutils"
+            [gzip]="gzip" [ssh-keygen]="openssh-client" [awk]="gawk" [sed]="sed"
+            [grep]="grep" [sort]="coreutils" [tar]="tar" [hostname]="hostname" [sysctl]="procps")
+    else
+        pkg_for=([ss]="iproute" [ip]="iproute" [shuf]="coreutils" [base64]="coreutils"
+            [gzip]="gzip" [ssh-keygen]="openssh-clients" [awk]="gawk" [sed]="sed"
+            [grep]="grep" [sort]="coreutils" [tar]="tar" [hostname]="hostname" [sysctl]="procps-ng")
+    fi
     local missing=() pkgs=() cmd pkg x seen=" "
     for cmd in "${!pkg_for[@]}"; do
         command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
@@ -138,8 +238,8 @@ check_dependencies() {
         say "❌ 缺少必要依赖，已取消。"
         return 1
     fi
-    DEBIAN_FRONTEND=noninteractive apt-get update || return 1
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || return 1
+    pkg_refresh || return 1
+    pkg_install "${pkgs[@]}" || return 1
 }
 check_dependencies || exit 1
 
@@ -498,9 +598,9 @@ business_port_preflight() {
     say
 
     if ! command -v ss >/dev/null 2>&1; then
-        say "未找到 ss，正在安装 iproute2..."
-        apt update
-        apt install -y iproute2
+        say "未找到 ss，正在按当前系统安装网络工具..."
+        pkg_refresh
+        if [[ "$OS_FAMILY" == "debian" ]]; then pkg_install iproute2; else pkg_install iproute; fi
     fi
 
     PF_BINDS=()
@@ -614,6 +714,10 @@ business_port_preflight() {
 }
 
 ensure_business_preflight() {
+    if [[ "${FULL_SKIP_PREFLIGHT:-0}" == "1" ]]; then
+        say "⚠️ 通用流程已按用户选择跳过业务端口预检。"
+        return 0
+    fi
     if [[ "${PREFLIGHT_DONE:-0}" != "1" ]]; then
         business_port_preflight
     fi
@@ -788,11 +892,21 @@ status_fail2ban() {
 }
 
 status_auto_updates() {
-    if dpkg -s unattended-upgrades >/dev/null 2>&1 \
-       && grep -Eq 'APT::Periodic::Unattended-Upgrade[[:space:]]+"1";' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null; then
-        printf '已开启'
-    elif dpkg -s unattended-upgrades >/dev/null 2>&1; then
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+        if package_installed unattended-upgrades \
+           && grep -Eq 'APT::Periodic::Unattended-Upgrade[[:space:]]+"1";' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null; then
+            printf '已开启（unattended-upgrades）'
+        elif package_installed unattended-upgrades; then
+            printf '已安装/未开启'
+        else
+            printf '未安装'
+        fi
+    elif systemctl is-enabled --quiet dnf-automatic-install.timer 2>/dev/null; then
+        printf '已开启（dnf-automatic）'
+    elif package_installed dnf-automatic; then
         printf '已安装/未开启'
+    elif systemctl is-enabled --quiet yum-cron.service 2>/dev/null; then
+        printf '已开启（yum-cron）'
     else
         printf '未安装'
     fi
@@ -825,8 +939,17 @@ status_docker_firewall() {
         printf '未检测到 DOCKER-USER'
     fi
 }
+ipv6_kernel_disabled() {
+    [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || true)" == "1" ]]
+}
 status_ipv6() {
-    if has_global_ipv6; then printf '已启用（%s）' "$(get_global_ipv6)"; else printf '无公网 IPv6'; fi
+    if ipv6_kernel_disabled; then
+        printf '已关闭（内核网络栈）'
+    elif has_global_ipv6; then
+        printf '已启用（%s）' "$(get_global_ipv6)"
+    else
+        printf '已启用；无公网 IPv6 地址'
+    fi
 }
 status_ipv6_firewall() {
     if ! has_global_ipv6; then printf '不适用'; return; fi
@@ -890,8 +1013,18 @@ status_port_manager() {
         none) printf '未配置' ;;
     esac
 }
+reboot_required() {
+    local rc
+    [[ -f /var/run/reboot-required || -f /run/smart-restart/reboot-hint-marker ]] && return 0
+    if command -v needs-restarting >/dev/null 2>&1; then
+        rc=0
+        needs-restarting -r >/dev/null 2>&1 || rc=$?
+        (( rc == 1 )) && return 0
+    fi
+    return 1
+}
 status_reboot_required() {
-    [[ -f /var/run/reboot-required ]] && printf '需要重启' || printf '当前无需重启'
+    reboot_required && printf '需要重启' || printf '当前无需重启'
 }
 show_security_status() {
     say "当前安全状态："
@@ -1110,6 +1243,10 @@ rollback_ssh_transaction() {
         fi
     fi
 
+    if [[ -f "$dir/selinux-added-ssh-port" ]] && command -v semanage >/dev/null 2>&1; then
+        semanage port -d -t ssh_port_t -p tcp "$(cat "$dir/selinux-added-ssh-port")" >/dev/null 2>&1 || true
+    fi
+
     if [[ -f "$dir/state.env" ]]; then cp -a "$dir/state.env" "$STATE_FILE"; fi
     load_state
     SSH_TXN_DIR=""
@@ -1241,6 +1378,36 @@ allow_ssh_port_in_firewall() {
     esac
 }
 
+allow_ssh_port_in_selinux() {
+    local port="$1" txn="$2" semanage_pkg
+    command -v getenforce >/dev/null 2>&1 || return 0
+    [[ "$(getenforce 2>/dev/null || true)" != "Disabled" ]] || return 0
+
+    if ! command -v semanage >/dev/null 2>&1; then
+        say "SELinux 已启用，正在安装 SSH 端口管理工具..."
+        if [[ "$OS_ID" == "centos" && "$OS_VERSION_ID" == 7* ]]; then
+            semanage_pkg="policycoreutils-python"
+        else
+            semanage_pkg="policycoreutils-python-utils"
+        fi
+        pkg_refresh || return 1
+        pkg_install "$semanage_pkg" || return 1
+    fi
+
+    if semanage port -l 2>/dev/null | awk '$1=="ssh_port_t" && $2=="tcp" {for(i=3;i<=NF;i++) print $i}' \
+        | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -Fxq "$port"; then
+        say "ℹ️ SELinux 已允许 SSH 端口：$port/tcp"
+        return 0
+    fi
+    if semanage port -a -t ssh_port_t -p tcp "$port" >/dev/null 2>&1; then
+        printf '%s\n' "$port" > "$txn/selinux-added-ssh-port"
+        say "✅ SELinux 已登记 SSH 端口：$port/tcp"
+        return 0
+    fi
+    say "❌ SELinux 无法登记 SSH 端口 $port/tcp。"
+    return 1
+}
+
 remove_old_ssh_firewall_rule() {
     local old="$1" new="$2" backend zone choice
     [[ -n "$old" && "$old" != "$new" ]] || return 0
@@ -1334,7 +1501,8 @@ step1_update_system() {
     say "=================================================="
     say "1. 更新系统"
     say "=================================================="
-    say "基础命令：apt update && apt upgrade -y"
+    say "系统：$OS_PRETTY_NAME"
+    say "包管理器：$PKG_MANAGER"
     say
 
     local business choice mode="normal"
@@ -1343,7 +1511,7 @@ step1_update_system() {
         say "检测到本机已有业务："
         while IFS= read -r x; do [[ -n "$x" ]] && say "  - $x"; done <<< "$business"
         say
-        say "1. 安全更新模式（推荐，避免 needrestart 自动重启业务服务）"
+        say "1. 安全更新模式（推荐；Debian 避免 needrestart 自动重启业务服务）"
         say "2. 正常系统更新"
         say "0. 跳过本次更新"
         choose_num choice "请选择 [默认1]：" "1 2 0" "1"
@@ -1354,23 +1522,21 @@ step1_update_system() {
         esac
     fi
 
-    export DEBIAN_FRONTEND=noninteractive
-    if [[ "$mode" == "safe" ]]; then
+    if [[ "$OS_FAMILY" == "debian" && "$mode" == "safe" ]]; then
         export NEEDRESTART_MODE=l
-    else
+    elif [[ "$OS_FAMILY" == "debian" ]]; then
         export NEEDRESTART_MODE=a
     fi
-    apt update || return 1
-    apt upgrade -y || return 1
-    log "系统更新完成：apt update && apt upgrade -y；模式=$mode"
+    pkg_upgrade_system || return 1
+    log "系统更新完成；系统=$OS_ID $OS_VERSION_ID；包管理器=$PKG_MANAGER；模式=$mode"
     say "✅ 系统更新完成。"
 
-    if command -v needrestart >/dev/null 2>&1; then
+    if [[ "$OS_FAMILY" == "debian" ]] && command -v needrestart >/dev/null 2>&1; then
         say
         say "服务重启建议（只读）："
         NEEDRESTART_MODE=l needrestart -r l 2>/dev/null >&4 || true
     fi
-    if [[ -f /var/run/reboot-required ]]; then
+    if reboot_required; then
         say "⚠️ 系统提示需要重启；建议全部开荒完成并确认 SSH 正常后，再从主菜单选择重启。"
     fi
 }
@@ -1451,6 +1617,11 @@ step3_random_ssh_port() {
     allow_ssh_port_in_firewall "$new" || rc=$?
     if (( rc != 0 )); then
         say "❌ 新 SSH 端口未能安全通过防火墙预检，正在回滚。"
+        rollback_ssh_transaction "$txn" || true
+        return 1
+    fi
+    if ! allow_ssh_port_in_selinux "$new" "$txn"; then
+        say "❌ 新 SSH 端口未能通过 SELinux 检查，正在回滚。"
         rollback_ssh_transaction "$txn" || true
         return 1
     fi
@@ -1709,6 +1880,14 @@ step7_configure_ufw() {
     backend="$(detect_firewall_backend)"
     say "检测到防火墙后端：$backend"
 
+    if [[ "$backend" == "none" && "$OS_FAMILY" == "rhel" ]]; then
+        say "当前 RPM 系统未检测到主机防火墙，正在安装并启动 firewalld..."
+        pkg_refresh || return 1
+        pkg_install firewalld || return 1
+        systemctl enable --now firewalld >/dev/null 2>&1 || return 1
+        backend="firewalld"
+    fi
+
     case "$backend" in
         conflict)
             say "❌ UFW 与 firewalld 同时启用，自动配置已停止。请先选择并保留一个防火墙后端。"
@@ -1744,8 +1923,8 @@ step7_configure_ufw() {
 
     if ! is_ufw_installed; then
         say "未安装 UFW，正在安装..."
-        DEBIAN_FRONTEND=noninteractive apt-get update || return 1
-        DEBIAN_FRONTEND=noninteractive apt-get install -y ufw || return 1
+        pkg_refresh || return 1
+        pkg_install ufw || return 1
     fi
 
     # 不 reset。只设置默认策略，并补齐当前 SSH + 业务保护端口。
@@ -1790,9 +1969,17 @@ step8_install_fail2ban() {
     say '=================================================='
     local port
     port="$(get_primary_ssh_port)"
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update || return 1
-    apt-get install -y fail2ban || return 1
+    pkg_refresh || return 1
+    if ! pkg_install fail2ban; then
+        if [[ "$OS_FAMILY" == "rhel" && "$OS_ID" != "fedora" ]]; then
+            say "默认软件源未提供 Fail2ban，尝试安装 EPEL 后重试..."
+            pkg_install epel-release || return 1
+            pkg_refresh || return 1
+            pkg_install fail2ban || return 1
+        else
+            return 1
+        fi
+    fi
     systemctl enable fail2ban >/dev/null 2>&1 || true
     if ! update_fail2ban_ssh_port "$port"; then
         say '❌ Fail2ban 已安装，但 sshd jail 未通过端口验证。'
@@ -1809,17 +1996,37 @@ step9_enable_auto_updates() {
     say "9. 开启自动安全更新"
     say "=================================================="
 
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y unattended-upgrades
-    cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+        pkg_refresh || return 1
+        pkg_install unattended-upgrades || return 1
+        cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
-    systemctl enable --now unattended-upgrades.service >/dev/null 2>&1 || true
-    log "unattended-upgrades 已启用"
-    say "✅ 自动安全更新已启用。"
-    say "配置：/etc/apt/apt.conf.d/20auto-upgrades"
+        systemctl enable --now unattended-upgrades.service >/dev/null 2>&1 || true
+        log "unattended-upgrades 已启用"
+        say "✅ 自动安全更新已启用：unattended-upgrades"
+        say "配置：/etc/apt/apt.conf.d/20auto-upgrades"
+    elif [[ "$PKG_MANAGER" == "dnf" ]]; then
+        pkg_refresh || return 1
+        pkg_install dnf-automatic || return 1
+        [[ -f /etc/dnf/automatic.conf ]] || { say "❌ 未找到 /etc/dnf/automatic.conf"; return 1; }
+        sed -Ei 's/^[[:space:]]*upgrade_type[[:space:]]*=.*/upgrade_type = security/' /etc/dnf/automatic.conf
+        systemctl enable --now dnf-automatic-install.timer >/dev/null 2>&1 || return 1
+        log "dnf-automatic 安全更新已启用"
+        say "✅ 自动安全更新已启用：dnf-automatic-install.timer"
+        say "配置：/etc/dnf/automatic.conf（upgrade_type = security）"
+    else
+        pkg_refresh || return 1
+        pkg_install yum-cron || return 1
+        [[ -f /etc/yum/yum-cron.conf ]] || { say "❌ 未找到 /etc/yum/yum-cron.conf"; return 1; }
+        sed -Ei 's/^[[:space:]]*update_cmd[[:space:]]*=.*/update_cmd = security/' /etc/yum/yum-cron.conf
+        sed -Ei 's/^[[:space:]]*apply_updates[[:space:]]*=.*/apply_updates = yes/' /etc/yum/yum-cron.conf
+        systemctl enable --now yum-cron.service >/dev/null 2>&1 || return 1
+        log "yum-cron 安全更新已启用"
+        say "✅ 自动安全更新已启用：yum-cron"
+        say "配置：/etc/yum/yum-cron.conf"
+    fi
 }
 
 step10_scan_public_ports() {
@@ -1868,6 +2075,8 @@ step11_security_report() {
         echo "生成时间：$(date '+%F %T %Z')"
         echo "主机名：$(hostname)"
         echo "系统：$(get_os_pretty)"
+        echo "系统家族：$OS_FAMILY"
+        echo "包管理器：$PKG_MANAGER"
         echo "IPv4：$(get_ipv4)"
         echo "IPv6：$(get_global_ipv6)"
         echo "运行时间：$(get_uptime_short)"
@@ -1899,11 +2108,15 @@ step11_security_report() {
         fi
         echo
         echo "[自动安全更新]"
-        if dpkg -s unattended-upgrades >/dev/null 2>&1; then
-            echo "unattended-upgrades：已安装"
+        echo "状态：$(status_auto_updates)"
+        if [[ "$OS_FAMILY" == "debian" ]]; then
             cat /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null || true
+        elif [[ "$PKG_MANAGER" == "dnf" ]]; then
+            grep -E '^[[:space:]]*(upgrade_type|apply_updates)[[:space:]]*=' /etc/dnf/automatic.conf 2>/dev/null || true
+            systemctl status dnf-automatic-install.timer --no-pager 2>/dev/null || true
         else
-            echo "unattended-upgrades：未安装"
+            grep -E '^[[:space:]]*(update_cmd|apply_updates)[[:space:]]*=' /etc/yum/yum-cron.conf 2>/dev/null || true
+            systemctl status yum-cron.service --no-pager 2>/dev/null || true
         fi
         echo
         echo "[公网/非回环监听]"
@@ -1927,7 +2140,7 @@ step11_security_report() {
         ip -6 addr show scope global 2>/dev/null || true
         echo
         echo "[重启提示]"
-        [[ -f /var/run/reboot-required ]] && echo "需要重启" || echo "当前没有 reboot-required 标记"
+        reboot_required && echo "需要重启" || echo "当前没有重启提示"
         echo
         echo "[说明]"
         echo "云厂商安全组、NAT、WAF、Docker 端口映射不完全由本脚本控制。"
@@ -2217,7 +2430,7 @@ audit_readonly() {
         echo
     } | tee -a "$AUDIT_OUT" >&4
 
-    audit_emit PASS "系统支持" "Debian/Ubuntu apt 系"
+    audit_emit PASS "系统支持" "$OS_PRETTY_NAME；$PKG_MANAGER"
     port="$(get_primary_ssh_port)"
     if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1024 )); then
         audit_emit PASS "SSH 端口" "$port（非低位）"
@@ -2250,8 +2463,8 @@ audit_readonly() {
     esac
 
     systemctl is-active --quiet fail2ban 2>/dev/null && audit_emit PASS "Fail2ban" "运行中" || audit_emit WARN "Fail2ban" "未运行"
-    if dpkg -s unattended-upgrades >/dev/null 2>&1 && grep -Eq 'Unattended-Upgrade[[:space:]]+"1"' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null; then
-        audit_emit PASS "自动安全更新" "已开启"
+    if [[ "$(status_auto_updates)" == 已开启* ]]; then
+        audit_emit PASS "自动安全更新" "$(status_auto_updates)"
     else
         audit_emit WARN "自动安全更新" "未开启/未配置"
     fi
@@ -2285,7 +2498,7 @@ audit_readonly() {
 
     syncv="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
     [[ "$syncv" == "yes" ]] && audit_emit PASS "时间同步" "NTP 已同步" || audit_emit WARN "时间同步" "NTP 未确认同步"
-    [[ -f /var/run/reboot-required ]] && audit_emit INFO "系统重启" "需要重启" || audit_emit INFO "系统重启" "当前无需重启"
+    reboot_required && audit_emit INFO "系统重启" "需要重启" || audit_emit INFO "系统重启" "当前无需重启"
 
     {
         echo
@@ -2365,7 +2578,7 @@ docker_security_menu() {
             4)
                 say
                 say "Docker 发布端口可能绕过普通 UFW INPUT。"
-                say "v10.0.0 默认只审计，不自动写入 DOCKER-USER，避免破坏 1Panel、青龙、Komari、x-ui 等现有业务。"
+                say "本版本默认只审计，不自动写入 DOCKER-USER，避免破坏 1Panel、青龙、Komari、x-ui 等现有业务。"
                 say "如需限制 Docker 公网访问，建议先备份，再按实际业务设计 DOCKER-USER 或仅绑定 127.0.0.1。"
                 pause
                 ;;
@@ -2429,6 +2642,96 @@ ipv6_firewall_manager() {
     esac
 }
 
+restore_ipv6_sysctl_backup() {
+    local backup="$1"
+    if [[ -f "$backup/had-config" ]]; then
+        cp -a "$backup/ipv6.conf" "$IPV6_SYSCTL_FILE"
+    else
+        rm -f "$IPV6_SYSCTL_FILE"
+    fi
+    sysctl --system >/dev/null 2>&1 || true
+}
+
+set_ipv6_enabled() {
+    local enabled="$1" value backup
+    backup="$BACKUP_ROOT/ipv6-$(date +%Y%m%d-%H%M%S)-$RANDOM"
+    mkdir -p "$backup"
+    chmod 700 "$backup"
+    if [[ -f "$IPV6_SYSCTL_FILE" ]]; then
+        cp -a "$IPV6_SYSCTL_FILE" "$backup/ipv6.conf"
+        printf '1\n' > "$backup/had-config"
+    fi
+
+    if [[ "$enabled" == "1" ]]; then
+        if grep -Eq '(^|[[:space:]])ipv6\.disable=1([[:space:]]|$)' /proc/cmdline 2>/dev/null; then
+            say "❌ 内核启动参数包含 ipv6.disable=1，sysctl 无法重新开启 IPv6。"
+            say "请先人工移除启动参数并重启服务器。"
+            return 1
+        fi
+        value=0
+    else
+        value=1
+    fi
+
+    cat > "$IPV6_SYSCTL_FILE" <<EOF
+# Managed by VPS Security Bootstrap
+net.ipv6.conf.all.disable_ipv6 = $value
+net.ipv6.conf.default.disable_ipv6 = $value
+net.ipv6.conf.lo.disable_ipv6 = $value
+EOF
+    chmod 600 "$IPV6_SYSCTL_FILE"
+
+    if ! sysctl --system >/dev/null 2>&1; then
+        say "❌ 应用 IPv6 sysctl 配置失败，正在恢复。"
+        restore_ipv6_sysctl_backup "$backup"
+        return 1
+    fi
+    if [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || true)" != "$value" ]]; then
+        say "❌ IPv6 实际状态未达到预期，正在恢复。"
+        restore_ipv6_sysctl_backup "$backup"
+        return 1
+    fi
+
+    if [[ "$enabled" == "1" ]]; then
+        log "IPv6 网络栈已开启；备份=$backup"
+        say "✅ IPv6 网络栈已开启。"
+        say "ℹ️ 公网 IPv6 地址由云厂商和网络配置决定，必要时重启网络或服务器。"
+    else
+        log "IPv6 网络栈已关闭；备份=$backup"
+        say "✅ IPv6 网络栈已关闭，现有 IPv6 地址和连接将不可用。"
+        say "ℹ️ 这不会删除云厂商分配的 IPv6，只会禁止本机使用。"
+    fi
+    say "配置：$IPV6_SYSCTL_FILE"
+    say "备份：$backup"
+}
+
+ipv6_toggle_menu() {
+    local c
+    while true; do
+        say
+        say "=================================================="
+        say "IPv6 开启 / 关闭"
+        say "=================================================="
+        say "当前状态：$(status_ipv6)"
+        say "1. 开启 IPv6"
+        say "2. 关闭 IPv6"
+        say "0. 返回"
+        choose_num c "请选择：" "1 2 0" "0"
+        case "$c" in
+            1)
+                confirm_y "确认开启服务器 IPv6 网络栈？" && set_ipv6_enabled 1
+                pause
+                ;;
+            2)
+                say "⚠️ 关闭 IPv6 会立即中断所有 IPv6 连接，并可能影响依赖 IPv6 的服务。"
+                confirm_y "确认关闭服务器 IPv6 网络栈？" && set_ipv6_enabled 0
+                pause
+                ;;
+            0) return 0 ;;
+        esac
+    done
+}
+
 show_backups() {
     say "备份目录：$BACKUP_ROOT"
     find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%TY-%Tm-%Td %TH:%TM  %p\n' 2>/dev/null | sort -r | head -30 >&4 || true
@@ -2477,6 +2780,36 @@ advanced_menu() {
     done
 }
 
+choose_full_step_action() {
+    local __var="$1" title="$2" choice
+    say
+    say "--------------------------------------------------"
+    say "下一步：$title"
+    say "1. 执行（默认）"
+    say "2. 跳过"
+    say "0. 停止通用流程并返回"
+    choose_num choice "请选择 [默认1]：" "1 2 0" "1"
+    printf -v "$__var" '%s' "$choice"
+}
+
+run_full_optional_step() {
+    local title="$1" fn="$2" action
+    choose_full_step_action action "$title"
+    case "$action" in
+        1) run_step "$title" "$fn" ;;
+        2)
+            if [[ "$title" == "业务端口保护预检" ]]; then
+                FULL_SKIP_PREFLIGHT="1"
+                say "⚠️ 后续若启用默认拒绝防火墙，未在现有规则中放行的业务端口可能无法访问。"
+            fi
+            log "通用流程已跳过：$title"
+            say "⏭ 已跳过：$title"
+            return 0
+            ;;
+        0) return 10 ;;
+    esac
+}
+
 run_full_setup() {
     say
     say "##################################################"
@@ -2488,40 +2821,62 @@ run_full_setup() {
     say "确认提示：[Y/n]；直接回车或 y=是，n=否。"
     say "整个过程中不要关闭当前 SSH 窗口。"
     say
-    local rc=0
+    local rc=0 action spec
     if ! confirm_y "开始通用安全开荒？"; then
         say "已取消，返回主菜单。"
         return 0
     fi
+    FULL_SKIP_PREFLIGHT="0"
 
-    run_step "业务端口保护预检" business_port_preflight || { say "预检未完成，已停止完整开荒。"; pause; return 0; }
-    run_step "1. 更新系统" step1_update_system || { pause; return 0; }
-    run_step "2. 修改 root 密码" step2_change_root_password || { pause; return 0; }
-    run_step "3. 随机 SSH 高位端口" step3_random_ssh_port || { pause; return 0; }
-    run_step "4. 添加 ED25519 公钥" step4_add_ed25519_key || { pause; return 0; }
-
-    if step5_test_key; then
+    for spec in \
+        "业务端口保护预检|business_port_preflight" \
+        "1. 更新系统|step1_update_system" \
+        "2. 修改 root 密码|step2_change_root_password" \
+        "3. 随机 SSH 高位端口|step3_random_ssh_port" \
+        "4. 添加 ED25519 公钥|step4_add_ed25519_key"
+    do
         rc=0
-    else
-        rc=$?
-    fi
-    load_state
-    if (( rc != 0 )); then
-        say
-        say "⚠️ 密钥测试未确认成功，完整流程已安全停止。"
-        say "不会关闭 SSH 密码认证，也不会继续修改后续安全配置。"
-        say "开荒前快照：${LAST_PREFLIGHT:-$PREFLIGHT_ROOT}"
-        pause
-        return 0
-    fi
+        run_full_optional_step "${spec%%|*}" "${spec##*|}" || rc=$?
+        if (( rc == 10 )); then say "已停止通用流程。"; pause; return 0; fi
+        if (( rc != 0 )); then pause; return 0; fi
+    done
 
-    run_step "6. 关闭 SSH 密码认证" step6_disable_password_auth || { pause; return 0; }
-    run_step "7. 配置主机防火墙" step7_configure_ufw || { pause; return 0; }
-    run_step "8. 安装 Fail2ban" step8_install_fail2ban || { pause; return 0; }
-    run_step "9. 开启自动安全更新" step9_enable_auto_updates || { pause; return 0; }
-    run_step "10. 扫描公网监听端口" step10_scan_public_ports || true
-    run_step "11. 输出安全检查报告" step11_security_report || true
-    run_step "12. 保存端口和配置备份" step12_save_info_and_backup || true
+    choose_full_step_action action "5. 新窗口测试密钥"
+    case "$action" in
+        1)
+            rc=0
+            step5_test_key || rc=$?
+            load_state
+            if (( rc != 0 )); then
+                say
+                say "⚠️ 密钥测试未确认成功，完整流程已安全停止。"
+                say "不会关闭 SSH 密码认证，也不会继续修改后续安全配置。"
+                say "开荒前快照：${LAST_PREFLIGHT:-$PREFLIGHT_ROOT}"
+                pause
+                return 0
+            fi
+            ;;
+        2)
+            log "通用流程已跳过：5. 新窗口测试密钥"
+            say "⏭ 已跳过密钥测试；关闭密码认证步骤仍会进行独立安全检查。"
+            ;;
+        0) say "已停止通用流程。"; pause; return 0 ;;
+    esac
+
+    for spec in \
+        "6. 关闭 SSH 密码认证|step6_disable_password_auth" \
+        "7. 配置主机防火墙|step7_configure_ufw" \
+        "8. 安装 Fail2ban|step8_install_fail2ban" \
+        "9. 开启自动安全更新|step9_enable_auto_updates" \
+        "10. 扫描公网监听端口|step10_scan_public_ports" \
+        "11. 输出安全检查报告|step11_security_report" \
+        "12. 保存端口和配置备份|step12_save_info_and_backup"
+    do
+        rc=0
+        run_full_optional_step "${spec%%|*}" "${spec##*|}" || rc=$?
+        if (( rc == 10 )); then say "已停止通用流程。"; pause; return 0; fi
+        if (( rc != 0 )); then pause; return 0; fi
+    done
 
     say
     say "##################################################"
@@ -2533,7 +2888,7 @@ run_full_setup() {
     say "开荒前快照：${LAST_PREFLIGHT:-$PREFLIGHT_ROOT}"
     say "信息文件：$INFO_FILE"
     say "最新报告：${LAST_REPORT:-$REPORT_DIR}"
-    [[ -f /var/run/reboot-required ]] && say "⚠️ 系统更新提示需要重启，可回主菜单选择 8。"
+    reboot_required && say "⚠️ 系统更新提示需要重启，可回主菜单选择 9。"
     pause
 }
 
@@ -2583,7 +2938,7 @@ reboot_server() {
     say "=================================================="
     say "重启服务器"
     say "=================================================="
-    [[ -f /var/run/reboot-required ]] && say "系统状态：当前更新提示需要重启。" || say "系统状态：当前没有 reboot-required 提示。"
+    reboot_required && say "系统状态：当前更新提示需要重启。" || say "系统状态：当前没有重启提示。"
     say "执行重启后当前 SSH 会正常断开，服务器启动完成后重新连接。"
     say
     if confirm_y "确认现在重启服务器？"; then
@@ -2602,6 +2957,7 @@ show_header() {
     say "              $APP_NAME"
     say "=================================================="
     say "系统：$(get_os_pretty)"
+    say "包管理器：$PKG_MANAGER"
     say "主机：$(hostname)"
     say "IPv4：$(get_ipv4)"
     say "IPv6：$(status_ipv6)"
@@ -2621,12 +2977,13 @@ main_menu() {
         say "5. 只读安全检查"
         say "6. Docker 安全检查"
         say "7. 高级设置"
-        say "8. 重启服务器"
+        say "8. IPv6 开启 / 关闭"
+        say "9. 重启服务器"
         say "0. 退出工具"
         say
         show_security_status
         say
-        choose_num c "请选择：" "1 2 3 4 5 6 7 8 0" "0"
+        choose_num c "请选择：" "1 2 3 4 5 6 7 8 9 0" "0"
         case "$c" in
             1) run_full_setup ;;
             2) single_menu ;;
@@ -2635,7 +2992,8 @@ main_menu() {
             5) audit_readonly; pause ;;
             6) docker_security_menu ;;
             7) advanced_menu ;;
-            8) reboot_server || true ;;
+            8) ipv6_toggle_menu ;;
+            9) reboot_server || true ;;
             0)
                 say "已退出安全开荒工具。"
                 say "当前 SSH 连接保持开启，可继续输入其他命令。"

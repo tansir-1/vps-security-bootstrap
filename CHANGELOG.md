@@ -1,5 +1,14 @@
 # Changelog
 
+## v10.1.0 - 2026-09
+
+### Added / Changed
+- 启动时识别 Debian、Ubuntu、RHEL、CentOS Stream、Rocky Linux、AlmaLinux、Oracle Linux、Fedora 和 Amazon Linux。
+- 按发行版选择 apt、dnf 或 yum，并适配系统更新、依赖安装、主机防火墙、Fail2ban 和自动安全更新。
+- RHEL/Fedora 系修改 SSH 端口时同步处理 SELinux `ssh_port_t`，并纳入 SSH 事务回滚。
+- 通用安全开荒的预检和每个步骤都可选择执行、跳过或停止。
+- 主菜单新增 IPv6 网络栈开启/关闭，包含配置备份、即时校验和失败回滚。
+
 ## v10.0.2 - 2026-09
 
 ### Fixed

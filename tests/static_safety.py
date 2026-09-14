@@ -7,6 +7,23 @@ installer = (root / 'install.sh').read_text(encoding='utf-8')
 builder = (root / 'tools' / 'build-copy-paste.sh').read_text(encoding='utf-8')
 version = (root / 'VERSION').read_text(encoding='utf-8').strip()
 assert f'VERSION="{version}"' in src
+assert 'detect_platform()' in src
+assert 'local ID="" ID_LIKE="" VERSION_ID="" PRETTY_NAME="" VERSION=""' in src
+assert 'debian|ubuntu' in src
+assert 'rhel|centos|rocky|almalinux|ol|fedora|amzn' in src
+assert 'pkg_upgrade_system()' in src
+assert 'dnf -y upgrade --refresh' in src
+assert 'dnf -y upgrade --releasever=latest' in src
+assert 'yum -y update' in src
+assert 'allow_ssh_port_in_selinux()' in src
+assert 'policycoreutils-python-utils' in src
+assert 'choose_full_step_action()' in src
+assert 'FULL_SKIP_PREFLIGHT="1"' in src
+assert '1. 执行（默认）' in src
+assert '2. 跳过' in src
+assert 'ipv6_toggle_menu()' in src
+assert 'net.ipv6.conf.all.disable_ipv6 = $value' in src
+assert 'restore_ipv6_sysctl_backup()' in src
 assert 'is_custom_iptables_active()' in src
 assert src.index('is_custom_nftables_active') < src.index('elif is_ufw_installed')
 assert 'firewall-cmd --get-zone-of-interface' in src

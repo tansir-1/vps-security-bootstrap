@@ -18,7 +18,7 @@ base64 -w 76 "$TMP_GZ" > "$TMP_B64"
 OUT="$DIST/vps-security-copy-paste.txt"
 cat > "$OUT" <<EOF2
 # VPS Security Bootstrap v$VERSION
-# 整段复制到 Debian/Ubuntu SSH 终端执行；无需提前上传 .sh 文件。
+# 整段复制到支持的 systemd Linux VPS SSH 终端执行；无需提前上传 .sh 文件。
 (
 set -Eeuo pipefail
 EXPECTED_SHA256="$EXPECTED_SHA256"

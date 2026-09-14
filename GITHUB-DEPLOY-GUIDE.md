@@ -11,7 +11,7 @@ vps-security-bootstrap
 Description：
 
 ```text
-Safe interactive Debian/Ubuntu VPS bootstrap & hardening tool with SSH rollback, firewall protection, business-port preflight, Docker/IPv6 audit and security reports.
+Safe interactive systemd VPS bootstrap & hardening tool for Debian/Ubuntu and RHEL/Fedora families, with SSH rollback, firewall protection, business-port preflight, Docker/IPv6 audit and security reports.
 ```
 
 Visibility：
@@ -86,7 +86,7 @@ Initial release: VPS Security Bootstrap v10.0.0
 Description：
 
 ```text
-Safe Debian/Ubuntu VPS bootstrap & security hardening tool.
+Safe multi-distribution systemd VPS bootstrap & security hardening tool.
 ```
 
 Topics：

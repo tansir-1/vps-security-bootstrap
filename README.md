@@ -8,17 +8,17 @@
 
 ## 简体中文
 
-> 面向 Debian / Ubuntu 的交互式 VPS 新机开荒与已部署服务器安全加固工具。
+> 面向 Debian/Ubuntu 与 RHEL/Fedora 系常用 systemd VPS 的交互式新机开荒与已部署服务器安全加固工具。
 
 核心原则：
 
 **不锁 SSH、不误关业务端口、不静默覆盖已有 DENY、关键改动可验证/可回滚。**
 
-当前版本：`v10.0.2`
+当前版本：`v10.1.0`
 
 ## 快速开始
 
-### 推荐：一键运行固定版本 v10.0.2
+### 推荐：一键运行固定版本 v10.1.0
 
 适合大多数用户，脚本会下载正式 Release、校验 SHA256、执行 Bash 语法检查，通过后才启动。
 
@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/mai
 ### 直接运行 Release 主脚本
 
 ```bash
-curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.0.2/vps-security-v10.0.2.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
+curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.0/vps-security-v10.1.0.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
 ```
 
 ### 下载源码后检查再运行
@@ -88,7 +88,8 @@ Copy-Paste 版本会：
 5. 只读安全检查
 6. Docker 安全检查
 7. 高级设置
-8. 重启服务器
+8. IPv6 开启 / 关闭
+9. 重启服务器
 0. 退出工具
 ```
 
@@ -97,7 +98,10 @@ Copy-Paste 版本会：
 ## 主要功能
 
 - 系统更新
+- 自动识别 Debian/Ubuntu、RHEL/CentOS Stream、Rocky Linux、AlmaLinux、Oracle Linux、Fedora、Amazon Linux
+- 按系统选择 apt、dnf 或 yum
 - 检测已部署业务并使用更保守的更新模式
+- 通用流程每一步均可执行、跳过或停止
 - 修改 root 密码
 - SSH 随机高位端口
 - ED25519 公钥登录
@@ -109,11 +113,12 @@ Copy-Paste 版本会：
 - 自定义 nftables / iptables 只读保护
 - 已有 UFW DENY 冲突保护
 - Fail2ban
-- unattended-upgrades 自动安全更新
+- unattended-upgrades / dnf-automatic / yum-cron 自动安全更新
 - 业务端口保护预检
 - Docker 公网映射检查
 - DOCKER-USER 检查
 - IPv6 防火墙覆盖检查
+- IPv6 网络栈开启/关闭（备份、校验、失败回滚）
 - 只读安全审计（PASS / WARN / FAIL / INFO）
 - SSH KeepAlive 可选连接稳定性优化
 - 防火墙端口放行 / 关闭菜单
@@ -179,7 +184,7 @@ Copy-Paste 版本会：
 
 Docker 发布端口可能绕过普通 UFW `INPUT` 链。
 
-v10.0.2 默认以**审计**为主：
+v10.1.0 默认以**审计**为主：
 
 - 查看公网映射
 - 查看绑定地址
@@ -190,7 +195,14 @@ v10.0.2 默认以**审计**为主：
 
 如果服务器存在公网 IPv6，本工具会检查主机防火墙是否覆盖 IPv6。
 
-不会默认关闭 IPv6。
+不会默认关闭 IPv6。主菜单第 8 项可以手动开启或关闭本机 IPv6 网络栈：
+
+- 使用独立的 `/etc/sysctl.d/99-vps-security-ipv6.conf`
+- 修改前备份现有配置
+- 应用后检查内核实际状态
+- 失败时恢复修改前配置
+
+关闭本机 IPv6 不会取消云厂商分配的 IPv6 地址资源。
 
 ## 工具数据目录
 
@@ -246,6 +258,12 @@ INFO
 
 - Debian 11 / 12 / 13
 - Ubuntu 20.04 / 22.04 / 24.04 / 26.04
+- RHEL 8 / 9 / 10
+- CentOS Stream、Rocky Linux、AlmaLinux、Oracle Linux
+- Fedora
+- Amazon Linux 2 / 2023
+
+需要 systemd；Alpine、OpenWrt 等非 systemd 系统暂不支持。
 
 不同 IDC 镜像可能存在定制 SSH、防火墙、cloud-init 或网络配置。首次在新环境使用时建议保留厂商控制台救援入口。
 
@@ -305,7 +323,7 @@ dist/SHA256SUMS
 当前正式版本：
 
 ```text
-v10.0.2
+v10.1.0
 ```
 
 生产环境建议优先使用固定 Release，而不是直接运行 `main` 分支。
@@ -322,17 +340,17 @@ MIT
 
 [Back to 简体中文](#简体中文)
 
-> An interactive Debian/Ubuntu VPS bootstrap and hardening tool for both fresh servers and already-deployed production servers.
+> An interactive VPS bootstrap and hardening tool for common systemd-based Debian/Ubuntu and RHEL/Fedora-family systems.
 
 Core principles:
 
 **Do not lock out SSH. Do not accidentally close business ports. Do not silently overwrite existing DENY rules. Make risky changes verifiable and recoverable.**
 
-Current version: `v10.0.2`
+Current version: `v10.1.0`
 
 ## Quick Start
 
-### Recommended: run the pinned v10.0.2 release
+### Recommended: run the pinned v10.1.0 release
 
 For root users:
 
@@ -351,7 +369,7 @@ The installer downloads the official Release asset, verifies the pinned SHA256, 
 ### Run the Release script directly
 
 ```bash
-curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.0.2/vps-security-v10.0.2.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
+curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.0/vps-security-v10.1.0.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
 ```
 
 ### Download, inspect, and run the source
@@ -398,7 +416,8 @@ The Copy-Paste build will:
 5. Read-only security audit
 6. Docker security audit
 7. Advanced settings
-8. Reboot server
+8. Enable / disable IPv6
+9. Reboot server
 0. Exit tool
 ```
 
@@ -407,7 +426,10 @@ Option `0` exits only the tool and does not intentionally close the current SSH 
 ## Main Features
 
 - System updates
+- Distribution detection for Debian/Ubuntu, RHEL/CentOS Stream, Rocky Linux, AlmaLinux, Oracle Linux, Fedora, and Amazon Linux
+- apt, dnf, or yum selected for the detected platform
 - Conservative update mode on servers with existing workloads
+- Execute, skip, or stop controls before every general-bootstrap step
 - Root password management
 - Random high SSH port
 - ED25519 public-key authentication
@@ -419,11 +441,12 @@ Option `0` exits only the tool and does not intentionally close the current SSH 
 - Read-only protection for custom nftables / iptables rules
 - Existing UFW DENY conflict protection
 - Fail2ban
-- Automatic security updates with unattended-upgrades
+- Automatic security updates with unattended-upgrades, dnf-automatic, or yum-cron
 - Business-port protection preflight
 - Docker public-port audit
 - DOCKER-USER audit
 - IPv6 firewall coverage audit
+- IPv6 stack enable/disable with backup, validation, and rollback
 - Read-only security audit with PASS / WARN / FAIL / INFO
 - Optional SSH KeepAlive tuning
 - Menu-driven firewall port allow / block
@@ -487,7 +510,7 @@ Conflicts require an explicit user decision.
 
 Docker-published ports may bypass normal UFW `INPUT` handling.
 
-v10.0.2 focuses on auditing:
+v10.1.0 keeps Docker firewall handling audit-first:
 
 - Public mappings
 - Bind addresses
@@ -500,7 +523,14 @@ It does not silently overwrite existing Docker firewall rules.
 
 If a public IPv6 address exists, the tool checks whether the host firewall covers IPv6.
 
-IPv6 is not disabled by default.
+IPv6 is not disabled by default. Main-menu option 8 can explicitly enable or disable the local IPv6 stack:
+
+- Uses `/etc/sysctl.d/99-vps-security-ipv6.conf`
+- Backs up an existing managed configuration
+- Verifies the effective kernel state
+- Restores the previous configuration on failure
+
+Disabling local IPv6 does not release an IPv6 allocation at the cloud provider.
 
 ## Data Directory
 
@@ -556,6 +586,12 @@ Primarily intended for:
 
 - Debian 11 / 12 / 13
 - Ubuntu 20.04 / 22.04 / 24.04 / 26.04
+- RHEL 8 / 9 / 10
+- CentOS Stream, Rocky Linux, AlmaLinux, and Oracle Linux
+- Fedora
+- Amazon Linux 2 / 2023
+
+systemd is required. Non-systemd systems such as Alpine and OpenWrt are not currently supported.
 
 IDC images may contain customized SSH, firewall, cloud-init, or networking settings. Keep access to the provider recovery console when using the tool on a new environment for the first time.
 
@@ -615,7 +651,7 @@ Do not publish the following in Issues, screenshots, logs, or chats:
 Current stable release:
 
 ```text
-v10.0.2
+v10.1.0
 ```
 
 For production servers, use a pinned Release rather than the moving `main` branch.

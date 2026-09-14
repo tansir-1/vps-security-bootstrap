@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO="tansir-1/vps-security-bootstrap"
-VERSION="${VPS_SECURITY_VERSION:-10.0.2}"
+VERSION="${VPS_SECURITY_VERSION:-10.1.0}"
 TAG="v${VERSION}"
 ASSET="vps-security-v${VERSION}.sh"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
@@ -24,7 +24,7 @@ trap cleanup EXIT INT TERM HUP
 chmod 700 "$TARGET"
 
 case "$VERSION" in
-    10.0.2) EXPECTED_SHA256="be1ae7f1eb476a269d9a45242e7ab1fe354ca27eafe3679a0eb1eb69fdec5de0" ;;
+    10.1.0) EXPECTED_SHA256="7eff3046de6fd3c91739c40475fcbd1379e9d7d9aa4ca357edbc2e97c89d29d0" ;;
     *) echo "ERROR: No pinned SHA256 is available in this installer for $TAG."; exit 1 ;;
 esac
 
