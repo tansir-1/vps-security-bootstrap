@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Permanent public entrypoint: keep main/install.sh compatible across releases.
 # Maintenance contract: AGENTS.md and docs/INSTALLATION.md.
 REPO="tansir-1/vps-security-bootstrap"
-VERSION="${VPS_SECURITY_VERSION:-10.1.2}"
+VERSION="${VPS_SECURITY_VERSION:-10.2.0}"
 TAG="v${VERSION}"
 ASSET="vps-security-v${VERSION}.sh"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
@@ -29,6 +29,7 @@ trap 'exit 129' HUP
 chmod 700 "$TARGET"
 
 case "$VERSION" in
+    10.2.0) EXPECTED_SHA256="c52186c1dc08e08f11ba50a2e6ab2a84c04f0d56a213595430b239b392044391" ;;
     10.1.2) EXPECTED_SHA256="3a7bf7844d2043acb59bf8402d6790af5caaf1b0ec19fa60d12f73f21a322390" ;;
     10.1.1) EXPECTED_SHA256="41f35fbabbf530acbf675b656b40a4fde0c0178554951d9189e7571afcd11648" ;;
     10.1.0) EXPECTED_SHA256="7eff3046de6fd3c91739c40475fcbd1379e9d7d9aa4ca357edbc2e97c89d29d0" ;;

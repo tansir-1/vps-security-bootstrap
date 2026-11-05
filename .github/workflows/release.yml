@@ -46,6 +46,7 @@ jobs:
           python3 tests/entrypoint.py
           python3 tests/regression.py
           python3 tests/ui.py
+          python3 tests/intrusion.py
           git diff --check
 
       - name: Rebuild distribution

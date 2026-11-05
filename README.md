@@ -14,15 +14,15 @@
 
 **不锁 SSH、不误关业务端口、不静默覆盖已有 DENY、关键改动可验证/可回滚。**
 
-当前正式版本：`v10.1.2`。默认安装器已同步为此版本，包含新的 SSH 终端界面。
+当前正式版本：`v10.2.0`。默认安装器已同步为此版本，新增入侵痕迹只读排查。
 
 ### SSH 终端界面预览
 
-v10.1.2 仅整理显示：统一标题、分组状态、菜单、提示与颜色；宽窗口双列、窄窗口单列。所有原有菜单编号、默认确认和功能模块保持一致。[显示设置与验证范围](docs/TERMINAL-UI.md)。
+v10.1.2 引入的终端显示：统一标题、分组状态、菜单、提示与颜色；宽窗口双列、窄窗口单列。所有原有菜单编号、默认确认和功能模块保持一致。[显示设置与验证范围](docs/TERMINAL-UI.md)。
 
 ![终端界面演示，使用样例数据](docs/images/terminal-ui-80.png)
 
-本次修复说明见 [安全检查记录](docs/SECURITY-REVIEW.md)，实际测试范围及真机验收步骤见 [测试文档](docs/TESTING.md)。正式发布附件与校验清单位于 [v10.1.2 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.2)。
+本次修复说明见 [安全检查记录](docs/SECURITY-REVIEW.md)，实际测试范围及真机验收步骤见 [测试文档](docs/TESTING.md)。正式发布附件与校验清单位于 [v10.2.0 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.2.0)。
 
 ## 快速开始
 
@@ -53,13 +53,13 @@ set -euo pipefail
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
-base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.2
-curl -fLO "$base/vps-security-v10.1.2.sh"
-curl -fLO "$base/vps-security-v10.1.2-copy-paste.txt"
+base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.2.0
+curl -fLO "$base/vps-security-v10.2.0.sh"
+curl -fLO "$base/vps-security-v10.2.0-copy-paste.txt"
 curl -fLO "$base/SHA256SUMS"
 sha256sum -c SHA256SUMS
-bash -n vps-security-v10.1.2.sh
-sudo bash vps-security-v10.1.2.sh
+bash -n vps-security-v10.2.0.sh
+sudo bash vps-security-v10.2.0.sh
 )
 ```
 
@@ -143,6 +143,7 @@ Copy-Paste 版本会：
 - IPv6 防火墙覆盖检查
 - IPv6 网络栈开启/关闭（备份、校验、失败回滚）
 - 只读安全审计（PASS / WARN / FAIL / INFO）
+- 单项菜单 13：入侵痕迹排查（30 组只读信息采集）
 - SSH KeepAlive 可选连接稳定性优化
 - 防火墙端口放行 / 关闭菜单
 - 安全报告
@@ -211,11 +212,17 @@ Copy-Paste 版本会：
 
 修改同时维护运行时和永久端口规则，不执行全量 reload。存在 rich-rule 拒绝规则或规则无法读取时会保守停止，需人工复核。SSH 回滚仅撤销事务新增的放行；UFW 采用配置快照恢复。
 
+## 入侵痕迹排查（只读）
+
+主菜单 `2. 单项安全优化` → `13. 入侵痕迹排查（只读）`。整合进程、临时/已删除可执行文件、登录日志、账户/公钥、Cron/systemd/Shell 持久化、preload、SUID/SGID、容器及网络等 30 组检查。
+
+结果仅表示待人工复核或未能完整采集；没有命中不等于未被入侵。不会自动删除文件、停止服务、执行被检查脚本、安装扫描器或上传报告。报告保存在 `/root/vps-security/reports/intrusion-*.txt`，权限 `600`，分享前须脱敏。[完整范围、限额与判读说明](docs/INTRUSION-AUDIT.md)。
+
 ## Docker 说明
 
 Docker 发布端口可能绕过普通 UFW `INPUT` 链。
 
-v10.1.2 默认以**审计**为主：
+v10.2.0 默认以**审计**为主：
 
 - 查看公网映射
 - 查看绑定地址
@@ -359,7 +366,7 @@ dist/SHA256SUMS
 当前正式版本：
 
 ```text
-v10.1.2
+v10.2.0
 ```
 
 生产环境推荐使用永久入口，由安装器选择已发布的正式 Release 并验证；固定版本下载用于排障或复现。
@@ -382,11 +389,11 @@ Core principles:
 
 **Do not lock out SSH. Do not accidentally close business ports. Do not silently overwrite existing DENY rules. Make risky changes verifiable and recoverable.**
 
-Current stable release: `v10.1.2`. The default installer now downloads this version, including the new SSH terminal UI.
+Current stable release: `v10.2.0`. The default installer now downloads this version, including the read-only intrusion-trace audit.
 
 The UI update groups statuses, aligns menus, adds optional semantic colors, and stacks columns on narrow terminals. Original menu numbers, confirmations and functional modules are preserved. See [terminal UI settings and checks](docs/TERMINAL-UI.md).
 
-See the [security review](docs/SECURITY-REVIEW.md) and [test scope / VM checklist](docs/TESTING.md). Download published assets and checksums from the [v10.1.2 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.2).
+See the [security review](docs/SECURITY-REVIEW.md) and [test scope / VM checklist](docs/TESTING.md). Download published assets and checksums from the [v10.2.0 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.2.0).
 
 ## Quick Start
 
@@ -417,13 +424,13 @@ set -euo pipefail
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
-base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.2
-curl -fLO "$base/vps-security-v10.1.2.sh"
-curl -fLO "$base/vps-security-v10.1.2-copy-paste.txt"
+base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.2.0
+curl -fLO "$base/vps-security-v10.2.0.sh"
+curl -fLO "$base/vps-security-v10.2.0-copy-paste.txt"
 curl -fLO "$base/SHA256SUMS"
 sha256sum -c SHA256SUMS
-bash -n vps-security-v10.1.2.sh
-sudo bash vps-security-v10.1.2.sh
+bash -n vps-security-v10.2.0.sh
+sudo bash vps-security-v10.2.0.sh
 )
 ```
 
@@ -503,6 +510,7 @@ Option `0` exits only the tool and does not intentionally close the current SSH 
 - IPv6 firewall coverage audit
 - IPv6 stack enable/disable with backup, validation, and rollback
 - Read-only security audit with PASS / WARN / FAIL / INFO
+- Single-item menu 13: intrusion-trace audit with 30 groups of read-only evidence
 - Optional SSH KeepAlive tuning
 - Menu-driven firewall port allow / block
 - Reports, backups, logs, and history cleanup
@@ -569,11 +577,17 @@ An inactive firewalld daemon is not automatically started. Preconfigure zones, i
 
 Port changes update both runtime and permanent rules without a full reload. Rich-rule rejection or unreadable rules cause a conservative stop for manual review. SSH rollback removes only transaction-added allows; UFW uses configuration snapshots.
 
+## Read-only intrusion-trace audit
+
+Choose main menu `2` → single-item menu `13`. It collects 30 groups of process, login, account/key, persistence, file, container and network observations. Findings require human review; missing evidence is explicitly marked, and no match is not proof of a clean server.
+
+It does not delete files, stop services, execute inspected scripts, install scanners or upload reports. Reports are saved under `/root/vps-security/reports/intrusion-*.txt` with mode `600`; redact sensitive content before sharing. See [scope, limits and interpretation](docs/INTRUSION-AUDIT.md).
+
 ## Docker Notes
 
 Docker-published ports may bypass normal UFW `INPUT` handling.
 
-v10.1.2 keeps Docker firewall handling audit-first:
+v10.2.0 keeps Docker firewall handling audit-first:
 
 - Public mappings
 - Bind addresses
@@ -717,7 +731,7 @@ Do not publish the following in Issues, screenshots, logs, or chats:
 Current release:
 
 ```text
-v10.1.2
+v10.2.0
 ```
 
 For production, use the permanent installer, which selects and verifies a stable Release. Pinned-version downloads remain available for troubleshooting.

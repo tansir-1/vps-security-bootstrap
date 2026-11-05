@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VPS Security Bootstrap v10.1.2
+# VPS Security Bootstrap v10.2.0
 # 面向常用 systemd VPS Linux：全新 VPS 开荒 + 已部署业务服务器安全加固。
 # 核心原则：不锁 SSH、不误关业务端口、不自动覆盖已有 DENY、关键改动可验证/可回滚。
 (
@@ -8,7 +8,7 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 umask 077
 
-VERSION="10.1.2"
+VERSION="10.2.0"
 APP_NAME="VPS Security Bootstrap v${VERSION}"
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 CLI_AUDIT=0
@@ -2607,6 +2607,320 @@ step13_port_firewall_manager() {
 # ------------------------------
 # 只读安全审计
 # ------------------------------
+intrusion_note() {
+    local level="$1"
+    shift
+    case "$level" in
+        WARN) INTRUSION_WARN=$((INTRUSION_WARN+1)) ;;
+        UNAVAILABLE) INTRUSION_UNAVAILABLE=$((INTRUSION_UNAVAILABLE+1)) ;;
+    esac
+    printf '[%s] %s\n' "$level" "$*"
+}
+
+intrusion_section() {
+    printf '\n---------- %s. %s ----------\n' "$1" "$2"
+}
+
+intrusion_run() {
+    local label="$1" lines="$2" remaining bytes rc
+    shift 2
+    INTRUSION_LAST_RC=0
+    printf '\n--- %s ---\n' "$label"
+    : > "$INTRUSION_WORK/output" || { INTRUSION_FATAL=1; INTRUSION_LAST_RC=1; intrusion_note UNAVAILABLE "无法创建临时采集文件。"; return 0; }
+    if ! command -v "$1" >/dev/null 2>&1; then
+        INTRUSION_LAST_RC=127
+        intrusion_note UNAVAILABLE "未安装/不支持 $1，此项未检查。"
+        return 0
+    fi
+    remaining=$((INTRUSION_DEADLINE-SECONDS))
+    if (( remaining <= 0 )); then
+        INTRUSION_LAST_RC=124
+        intrusion_note UNAVAILABLE "总采集时间预算已用尽，此项未检查。"
+        return 0
+    fi
+    (( remaining <= 20 )) || remaining=20
+    # Bound both runtime and bytes. Only the audit's own child command is timed out.
+    timeout -k 2s "${remaining}s" "$@" 2>&1 | head -c 262144 > "$INTRUSION_WORK/output"
+    local -a results=("${PIPESTATUS[@]}")
+    rc="${results[0]}"
+    if (( results[1] != 0 )); then
+        INTRUSION_FATAL=1; INTRUSION_LAST_RC=1
+        intrusion_note UNAVAILABLE "临时采集文件写入失败。"
+        return 0
+    fi
+    INTRUSION_LAST_RC="$rc"
+    sed -n "1,${lines}p" "$INTRUSION_WORK/output"
+    bytes="$(wc -c < "$INTRUSION_WORK/output")"
+    if (( bytes >= 262144 )); then
+        intrusion_note UNAVAILABLE "输出达到 256 KiB 上限，内容不完整。"
+    fi
+    if (( rc == 1 )) && [[ "$1" == grep ]]; then
+        printf '[INFO] 此模式未匹配；不表示系统无入侵。\n'
+    elif (( rc == 1 )) && [[ "$1" == crontab ]] && grep -q '^no crontab for ' "$INTRUSION_WORK/output"; then
+        printf '[INFO] 此账户没有 crontab。\n'
+    elif (( rc != 0 && rc != 141 )); then
+        intrusion_note UNAVAILABLE "命令失败/超时（返回码 $rc），不得当作未发现异常。"
+    fi
+    if (( $(wc -l < "$INTRUSION_WORK/output") > lines )); then
+        printf '[INFO] 仅显示前 %s 行。\n' "$lines"
+    fi
+}
+
+intrusion_file() {
+    local file="$1" lines="${2:-80}"
+    if [[ -L "$file" ]]; then
+        intrusion_note UNAVAILABLE "符号链接未读取内容：$file"
+    elif [[ -f "$file" && -r "$file" ]]; then
+        intrusion_run "文件：$file" "$lines" head -c 262144 -- "$file"
+    else
+        printf '[INFO] 文件不存在/不可读取：%s\n' "$file"
+    fi
+}
+
+intrusion_directory_files() {
+    local dir="$1" file count=0
+    for file in "$dir"/*; do
+        [[ -f "$file" || -L "$file" ]] || continue
+        count=$((count+1))
+        if (( count > 50 )); then
+            intrusion_note UNAVAILABLE "$dir 超过 50 个文件，剩余未检查。"
+            break
+        fi
+        intrusion_file "$file" 60
+    done
+}
+
+intrusion_process_matches() {
+    local snapshot="$1" mode="$2" pattern matches
+    if [[ "$mode" == names ]]; then
+        pattern='(^|[^[:alnum:]_])(xmrig|minerd|cpuminer|cryptonight|kinsing|kdevtmpfsi|watchbog|perfcc|kerberods|hiddenwasp|masscan|zmap|pnscan)([^[:alnum:]_]|$)'
+    else
+        pattern='(/dev/tcp|bash[[:space:]]+-i|sh[[:space:]]+-i|nc .* -e|netcat .* -e|socat .*exec|base64[[:space:]]+-d|curl .*[|].*sh|wget .*[|].*sh|python.*socket|perl.*socket)'
+    fi
+    matches="$(awk -v pattern="$pattern" 'tolower($0) ~ pattern' "$snapshot")"
+    if [[ -n "$matches" ]]; then
+        intrusion_note WARN "以下仅为需人工确认的进程特征，合法工具也可能匹配："
+        printf '%s\n' "$matches"
+    else
+        printf '[INFO] 已采集的进程快照中未匹配此模式；名称可伪装。\n'
+    fi
+}
+
+intrusion_proc_scan() {
+    local root="$1" proc pid exe count=0 unreadable=0 suspicious=0
+    for proc in "$root"/[0-9]*; do
+        [[ -d "$proc" ]] || continue
+        count=$((count+1))
+        if (( count > 5000 || SECONDS >= INTRUSION_DEADLINE )); then
+            intrusion_note UNAVAILABLE "进程遍历达到数量/时间上限，剩余未检查。"
+            break
+        fi
+        pid="${proc##*/}"
+        exe="$(readlink "$proc/exe" 2>/dev/null || true)"
+        [[ -n "$exe" ]] || { unreadable=$((unreadable+1)); continue; }
+        case "$exe" in
+            /tmp/*|/var/tmp/*|/dev/shm/*|*' (deleted)')
+                suspicious=$((suspicious+1))
+                if (( suspicious > 100 )); then
+                    (( suspicious != 101 )) || intrusion_note UNAVAILABLE "可疑进程仅显示前 100 项。"
+                    continue
+                fi
+                intrusion_note WARN "PID=$pid EXE=$exe（临时路径或已删除；更新软件也可能造成 deleted）"
+                printf 'CMD: '
+                { head -c 4096 -- "$proc/cmdline" | tr '\0' ' '; } 2>/dev/null || true
+                printf '\n'
+                ;;
+        esac
+    done
+    printf '[INFO] 遍历 %s 项；待复核 %s 项；无法读取 exe %s 项（内核线程/权限/退出竞争均可能）。\n' "$count" "$suspicious" "$unreadable"
+}
+
+intrusion_accounts() {
+    local passwd_file="$1" uid0
+    if [[ ! -r "$passwd_file" ]]; then
+        intrusion_note UNAVAILABLE "无法读取账户文件。"
+        return 0
+    fi
+    printf '%s\n' '--- UID=0 账户 ---'
+    awk -F: '$3==0 {print $1 ":" $3 ":" $6 ":" $7}' "$passwd_file"
+    uid0="$(awk -F: '$3==0 && $1!="root" {print $1}' "$passwd_file")"
+    [[ -z "$uid0" ]] || intrusion_note WARN "发现非 root 名称的 UID=0 账户：$uid0；需人工确认。"
+    printf '%s\n' '--- 可登录 Shell 账户 ---'
+    awk -F: '$7 !~ /(nologin|false)$/ {printf "%s UID=%s HOME=%s SHELL=%s\n",$1,$3,$6,$7}' "$passwd_file"
+}
+
+intrusion_collect() {
+    INTRUSION_WARN=0; INTRUSION_UNAVAILABLE=0; INTRUSION_FATAL=0
+    INTRUSION_DEADLINE=$((SECONDS+180))
+    local file dir user home cid count=0 container_count=0
+    local -a ids=()
+    printf 'VPS Security Bootstrap v%s - 入侵痕迹排查\n时间：%s\n' "$VERSION" "$(date '+%F %T %Z')"
+    printf '只读采集：不执行被检查文件、不删除文件、不停止服务、不修改系统配置、不安装软件。\n'
+    printf '每命令最多 20 秒/256 KiB，总预算约 180 秒；各项另有行数限制。\n'
+    printf '报告含账户、IP、命令行和配置，可能包含凭据；分享前请脱敏。\n'
+    printf '未匹配不代表无入侵；合法更新/管理员操作也会触发待复核项。\n'
+
+    intrusion_section 1 "系统基本信息"
+    intrusion_run 内核 10 uname -a
+    intrusion_run 系统版本 30 cat /etc/os-release
+    intrusion_run 运行时间 5 uptime
+    intrusion_run 内存 10 free -h
+    intrusion_run 文件系统 40 df -hT
+    intrusion_section 2 "资源占用最高的进程"
+    intrusion_run "CPU TOP 30" 31 ps axww -o pid,ppid,user,%cpu,%mem,etime,lstart,args --sort=-%cpu
+    intrusion_run "内存 TOP 30" 31 ps axww -o pid,ppid,user,%cpu,%mem,etime,lstart,args --sort=-%mem
+    intrusion_run "进程快照（以下特征检查的依据）" 150 ps axww -o pid,ppid,user,%cpu,%mem,args
+    cp "$INTRUSION_WORK/output" "$INTRUSION_WORK/processes" || return 1
+    local process_rc="$INTRUSION_LAST_RC"
+    intrusion_section 3 "矿工/扫描器等进程关键词（人工复核）"
+    if (( process_rc == 0 )); then intrusion_process_matches "$INTRUSION_WORK/processes" names
+    else intrusion_note UNAVAILABLE "进程快照采集失败，此项未检查。"; fi
+    intrusion_section 4 "临时目录运行的可执行文件"
+    intrusion_section 5 "已删除但仍运行的可执行文件（合并遍历 /proc）"
+    intrusion_proc_scan /proc
+    intrusion_section 6 "当前监听端口"
+    intrusion_run 监听端口 200 ss -lntup
+    intrusion_section 7 "当前网络连接"
+    intrusion_run "TCP/UDP" 200 ss -tunap
+    intrusion_run "ESTABLISHED TCP" 100 ss -tnp state established
+    intrusion_section 8 "SSH 实际配置"
+    intrusion_run "sshd -T（配置路径与本工具一致）" 150 "$SSHD_BIN" -T -f "$SSHD_CONFIG"
+    cp "$INTRUSION_WORK/output" "$INTRUSION_WORK/sshd" || return 1
+    intrusion_section 9 "最近 30 天 SSH 成功登录（日志最多 20000 条）"
+    intrusion_run "ssh/sshd 服务日志（新到旧）" 5 journalctl -u ssh.service -u sshd.service --since "30 days ago" -n 20000 --reverse --no-pager -o short-iso
+    cp "$INTRUSION_WORK/output" "$INTRUSION_WORK/ssh-log" || return 1
+    local journal_rc="$INTRUSION_LAST_RC"
+    if (( journal_rc == 0 )); then
+        grep -E 'Accepted (password|publickey)' "$INTRUSION_WORK/ssh-log" | head -100 || true
+        printf '\n--- 成功登录账号/IP汇总（仅基于已采集日志）---\n'
+        sed -nE 's/.*Accepted [^ ]+ for ([^ ]+) from ([0-9a-fA-F:.]+) port.*/\1 \2/p' "$INTRUSION_WORK/ssh-log" | sort | uniq -c | sort -nr | head -50
+        printf '[INFO] 日志为空、已轮转或不在这些 unit 中均可能造成遗漏。\n'
+    fi
+    intrusion_section 10 "SSH 失败登录（与第 9 项同一日志快照）"
+    if (( journal_rc == 0 )); then
+        grep -E 'Failed password|Invalid user|authentication failure' "$INTRUSION_WORK/ssh-log" | head -100 || true
+        printf '\n--- 来源 IP 汇总 ---\n'
+        sed -nE 's/.* (Failed password|Invalid user).* from ([0-9a-fA-F:.]+) port.*/\2/p' "$INTRUSION_WORK/ssh-log" | sort | uniq -c | sort -nr | head -50
+    else intrusion_note UNAVAILABLE "SSH 日志不可用，此项未检查。"; fi
+    intrusion_section 11 "登录历史"
+    intrusion_run 最近登录 100 last -a -n 100
+    intrusion_run 失败登录 100 lastb -a -n 100
+    intrusion_section 12 "系统账户"
+    intrusion_run "账户快照（最多 256 KiB）" 5 head -c 262144 -- /etc/passwd
+    cp "$INTRUSION_WORK/output" "$INTRUSION_WORK/passwd" || return 1
+    intrusion_accounts "$INTRUSION_WORK/passwd"
+    intrusion_section 13 "authorized_keys 元数据及指纹（不显示公钥内容）"
+    while IFS=: read -r user _ _ _ _ home _; do
+        [[ "$home" == /* ]] || continue
+        file="$home/.ssh/authorized_keys"
+        [[ -f "$file" && ! -L "$file" ]] || continue
+        count=$((count+1)); (( count <= 100 )) || { intrusion_note UNAVAILABLE "密钥文件超过 100 项，剩余未检查。"; break; }
+        intrusion_run "权限：$file" 12 stat -- "$file"
+        intrusion_run "指纹：$file" 40 ssh-keygen -lf "$file"
+    done < "$INTRUSION_WORK/passwd"
+    intrusion_section 14 "Sudoers（敏感配置）"
+    intrusion_file /etc/sudoers 120
+    intrusion_directory_files /etc/sudoers.d
+    intrusion_section 15 "用户 Crontab"
+    count=0
+    while IFS=: read -r user _; do
+        count=$((count+1)); (( count <= 100 )) || { intrusion_note UNAVAILABLE "账户超过 100 项，剩余 crontab 未检查。"; break; }
+        intrusion_run "用户：$user" 60 crontab -u "$user" -l
+    done < "$INTRUSION_WORK/passwd"
+    intrusion_section 16 "系统 Cron"
+    intrusion_file /etc/crontab 100
+    for dir in /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly; do
+        intrusion_run "$dir 文件清单" 80 find "$dir" -maxdepth 1 -type f -printf '%TY-%Tm-%Td %TH:%TM %u %m %p\n'
+    done
+    intrusion_directory_files /etc/cron.d
+    intrusion_section 17 "Systemd 定时任务"
+    intrusion_run 定时任务 150 systemctl list-timers --all --no-pager
+    intrusion_section 18 "已启用的 Systemd 服务"
+    intrusion_run 启用服务 200 systemctl list-unit-files --type=service --state=enabled --no-pager
+    intrusion_section 19 "本地 Systemd 单元元数据"
+    intrusion_run 单元文件 150 find /etc/systemd/system -xdev -maxdepth 4 -type f -printf '%TY-%Tm-%Td %TH:%TM %p\n'
+    intrusion_section 20 "启动项/Shell 持久化特征（不执行内容）"
+    for file in /etc/rc.local /etc/profile /etc/bash.bashrc /etc/bashrc /root/.bashrc /root/.profile /root/.bash_profile; do
+        [[ -f "$file" && ! -L "$file" ]] || continue
+        intrusion_run "$file 特征" 80 grep -nEi 'curl|wget|/tmp/|/var/tmp/|/dev/shm/|base64|nohup|nc |netcat|socat|python.*http|perl.*socket|bash.*tcp' -- "$file"
+    done
+    intrusion_run profile.d文件 100 find /etc/profile.d -maxdepth 1 -type f -printf '%TY-%Tm-%Td %TH:%TM %p\n'
+    intrusion_directory_files /etc/profile.d
+    intrusion_section 21 "ld.so.preload（合法软件也可能使用）"
+    if [[ -s /etc/ld.so.preload ]]; then
+        intrusion_note WARN "ld.so.preload 非空，需确认库来源，不能直接判定 rootkit。"
+        intrusion_file /etc/ld.so.preload 80
+    else printf '[INFO] ld.so.preload 不存在或为空；不能排除 rootkit。\n'; fi
+    intrusion_section 22 "临时目录近 30 天可执行/脚本文件（最多 4 层）"
+    for dir in /tmp /var/tmp /dev/shm; do
+        intrusion_run "$dir" 100 find "$dir" -xdev -maxdepth 4 -type f -mtime -30 '(' -perm /111 -o -name '*.sh' -o -name '*.py' -o -name '*.pl' ')' -printf '%TY-%Tm-%Td %TH:%TM %u %m %s %p\n'
+    done
+    intrusion_section 23 "临时目录 SUID/SGID（最多 4 层）"
+    intrusion_run SUID/SGID 100 find /tmp /var/tmp /dev/shm -xdev -maxdepth 4 -type f -perm /6000 -ls
+    [[ ! -s "$INTRUSION_WORK/output" || "$INTRUSION_LAST_RC" != 0 ]] || intrusion_note WARN "临时目录存在 SUID/SGID 文件，需人工复核。"
+    intrusion_section 24 "usr/local 可执行目录近 30 天文件"
+    intrusion_run 本地文件 100 find /usr/local/bin /usr/local/sbin -maxdepth 1 -type f -mtime -30 -printf '%TY-%Tm-%Td %TH:%TM %u %m %s %p\n'
+    intrusion_section 25 "Docker 容器、权限与挂载（不读取 Env）"
+    intrusion_run 容器列表 100 docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+    if (( INTRUSION_LAST_RC == 0 )); then
+        while read -r cid _; do
+            [[ "$cid" =~ ^[0-9a-f]{12,64}$ ]] || continue
+            ids+=("$cid"); container_count=$((container_count+1)); (( container_count < 100 )) || break
+        done < "$INTRUSION_WORK/output"
+        (( container_count < 100 )) || intrusion_note UNAVAILABLE "容器检查达到 100 个上限，未保证覆盖全部容器。"
+        if (( container_count > 0 )); then
+            intrusion_run "容器权限（最多 100 个）" 100 docker inspect --type container -f 'Name={{.Name}} Privileged={{.HostConfig.Privileged}} Network={{.HostConfig.NetworkMode}} Pid={{.HostConfig.PidMode}} Restart={{.HostConfig.RestartPolicy.Name}}' "${ids[@]}"
+            intrusion_run "容器挂载（最多 100 个）" 200 docker inspect --type container -f 'Name={{.Name}} {{range .Mounts}}{{println .Source " -> " .Destination}}{{end}}' "${ids[@]}"
+        fi
+    fi
+    intrusion_section 26 "主机防火墙（只读）"
+    intrusion_run UFW 150 ufw status verbose
+    intrusion_run firewalld 150 firewall-cmd --list-all-zones
+    intrusion_run nftables 300 nft list ruleset
+    intrusion_run iptables 200 iptables -S
+    intrusion_section 27 "内核模块"
+    intrusion_run 模块列表 150 lsmod
+    intrusion_section 28 "关键目录近 30 天修改（最多 4 层）"
+    intrusion_run 修改清单 200 find /etc/cron.d /etc/profile.d /etc/systemd/system /root/.ssh -xdev -maxdepth 4 -type f -mtime -30 -printf '%TY-%Tm-%Td %TH:%TM %u %m %p\n'
+    intrusion_section 29 "可疑命令行特征（人工复核）"
+    if (( process_rc == 0 )); then intrusion_process_matches "$INTRUSION_WORK/processes" commands
+    else intrusion_note UNAVAILABLE "进程快照不可用。"; fi
+    intrusion_section 30 "SSH/业务端口动态复核（无硬编码面板端口）"
+    awk '$1=="port" {print "SSH 配置端口：" $2}' "$INTRUSION_WORK/sshd"
+    intrusion_run 所有当前监听 150 ss -lntup
+    printf '\n采集结束：%s\n待人工复核：%s；未完整采集：%s\n' "$(date '+%F %T %Z')" "$INTRUSION_WARN" "$INTRUSION_UNAVAILABLE"
+    printf '本报告不提供“未被入侵”保证。不要仅凭关键词、deleted 或 preload 删除文件/进程。\n'
+    (( INTRUSION_FATAL == 0 ))
+}
+
+intrusion_audit() {
+    (
+        ui_heading "入侵痕迹排查（只读）"
+        say "检查进程、登录、账户、持久化、文件和容器等 30 组信息，采集时间预算 3 分钟。"
+        say "报告可能包含凭据和业务信息，仅保存在 root 可读目录；分享前请脱敏。"
+        say "此项不会清理或修复系统；待复核不等于已入侵，未匹配不等于安全。"
+        confirm_y "开始只读采集？" || return 0
+        local required INTRUSION_WORK report
+        for required in timeout head tee tr mktemp; do
+            command -v "$required" >/dev/null 2>&1 || { say "❌ 缺少 $required，未安装任何软件，已取消。"; return 1; }
+        done
+        umask 077
+        INTRUSION_WORK="$(mktemp -d "$BASE_DIR/.intrusion.XXXXXX")" || return 1
+        trap 'rm -rf -- "$INTRUSION_WORK"' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        report="$(mktemp "$REPORT_DIR/intrusion-$(date +%Y%m%d-%H%M%S)-XXXXXX.txt")" || return 1
+        chmod 600 "$report" || return 1
+        if ! intrusion_collect 2>&1 | LC_ALL=C tr -d '\000-\010\013-\037\177' | tee "$report" >&4; then
+            say "❌ 采集或报告写入失败，报告可能不完整：$report"
+            return 1
+        fi
+        log "入侵痕迹只读采集完成：$report"
+        say "✅ 采集报告：$report"
+        say "请结合报告中的 WARN / UNAVAILABLE 人工核实，勿直接删除未知文件。"
+    )
+}
+
 AUDIT_PASS=0; AUDIT_WARN=0; AUDIT_FAIL=0; AUDIT_INFO=0; AUDIT_OUT=""
 audit_emit() {
     local level="$1" item="$2" detail="$3"
@@ -3119,9 +3433,10 @@ single_menu() {
         ui_item 10 "扫描公网监听端口"
         ui_item 11 "输出最终安全检查报告"
         ui_item 12 "保存端口和配置备份位置"
+        ui_item 13 "入侵痕迹排查（只读）"
         ui_item 0 "返回主菜单"
         say
-        choose_num c "请输入数字：" "1 2 3 4 5 6 7 8 9 10 11 12 0" "0"
+        choose_num c "请输入数字：" "1 2 3 4 5 6 7 8 9 10 11 12 13 0" "0"
         case "$c" in
             1) run_step "更新系统" step1_update_system || true; pause ;;
             2) run_step "修改 root 密码" step2_change_root_password || true; pause ;;
@@ -3135,6 +3450,7 @@ single_menu() {
             10) run_step "公网端口扫描" step10_scan_public_ports || true; pause ;;
             11) run_step "安全检查报告" step11_security_report || true; pause ;;
             12) run_step "保存信息和备份" step12_save_info_and_backup || true; pause ;;
+            13) run_step "入侵痕迹排查" intrusion_audit || true; pause ;;
             0) return 0 ;;
         esac
     done

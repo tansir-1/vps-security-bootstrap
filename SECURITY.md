@@ -2,7 +2,7 @@
 
 ## Supported version
 
-当前维护：v10.x；当前版本 v10.1.2，发布附件见 GitHub Releases。
+当前维护：v10.x；当前版本 v10.2.0，发布附件见 GitHub Releases。
 
 ## Reporting a vulnerability
 
@@ -21,3 +21,5 @@
 ## 安全边界
 
 [安全检查记录](docs/SECURITY-REVIEW.md) 记录已修复问题、测试范围及仍需人工验证的规则。没有定时自动 SSH 回滚；修改前保留独立控制台。SHA256 校验不等同于独立的发布签名。审计只读指不修改系统配置，仍会写工具自身数据。
+
+入侵痕迹模块仅提供受限只读采集，不提供无入侵或 rootkit 排除保证。报告可能包含凭据，分享前脱敏。范围与限制见 [INTRUSION-AUDIT.md](docs/INTRUSION-AUDIT.md)。

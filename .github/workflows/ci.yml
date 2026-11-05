@@ -38,6 +38,9 @@ jobs:
       - name: Terminal UI tests
         run: python3 tests/ui.py
 
+      - name: Intrusion audit tests
+        run: python3 tests/intrusion.py
+
       - name: Static safety tests
         run: python3 tests/static_safety.py
 
