@@ -27,10 +27,13 @@ jobs:
 
       - name: ShellCheck high-priority errors
         run: |
-          shellcheck -x -S error             vps-security.sh             install.sh             tools/build-copy-paste.sh             tests/smoke.sh
+          shellcheck -x -S warning             vps-security.sh             install.sh             tools/build-copy-paste.sh             tests/smoke.sh
 
       - name: Smoke tests
         run: bash tests/smoke.sh
+
+      - name: Behavioral regression tests
+        run: python3 tests/regression.py
 
       - name: Static safety tests
         run: python3 tests/static_safety.py

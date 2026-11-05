@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# VPS Security Bootstrap v10.1.0
+# VPS Security Bootstrap v10.1.1
 # 面向常用 systemd VPS Linux：全新 VPS 开荒 + 已部署业务服务器安全加固。
 # 核心原则：不锁 SSH、不误关业务端口、不自动覆盖已有 DENY、关键改动可验证/可回滚。
 (
 set -Euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
 
-VERSION="10.1.0"
+VERSION="10.1.1"
 APP_NAME="VPS Security Bootstrap v${VERSION}"
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 CLI_AUDIT=0
+if (( $# > 1 )); then
+    printf 'ERROR: Only one option is accepted. Use --help.\n' >&2
+    exit 2
+fi
 
 case "${1:-}" in
     --version|-V)
@@ -33,13 +40,15 @@ VPS Security Bootstrap
 EOF
         exit 0
         ;;
+    "") ;;
+    *) printf 'ERROR: Unknown option: %s\n' "$1" >&2; exit 2 ;;
 esac
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
     if command -v sudo >/dev/null 2>&1; then
         if [[ -r "$SCRIPT_PATH" && "$SCRIPT_PATH" != /dev/fd/* && "$SCRIPT_PATH" != /proc/*/fd/* ]]; then
             echo "检测到当前不是 root，已找到 sudo，正在自动提权重新运行..."
-            exec sudo -E bash "$SCRIPT_PATH" "$@"
+            exec sudo bash "$SCRIPT_PATH" "$@"
         fi
         echo "❌ 当前不是 root；当前运行方式无法自动重新执行脚本。"
         echo "请改用：sudo bash $SCRIPT_PATH"
@@ -74,19 +83,28 @@ SSH_TXN_DIR=""
 SSH_TXN_OLD_PORT=""
 SSH_TXN_NEW_PORT=""
 
-mkdir -p "$BASE_DIR" "$LOG_DIR" "$REPORT_DIR" "$BACKUP_ROOT" "$TXN_ROOT" "$PREFLIGHT_ROOT"
-chmod 700 "$BASE_DIR" "$LOG_DIR" "$REPORT_DIR" "$BACKUP_ROOT" "$TXN_ROOT" "$PREFLIGHT_ROOT"
-touch "$LOG_FILE"
-chmod 600 "$LOG_FILE"
+mkdir -p "$BASE_DIR" "$LOG_DIR" "$REPORT_DIR" "$BACKUP_ROOT" "$TXN_ROOT" "$PREFLIGHT_ROOT" || exit 1
+chmod 700 "$BASE_DIR" "$LOG_DIR" "$REPORT_DIR" "$BACKUP_ROOT" "$TXN_ROOT" "$PREFLIGHT_ROOT" || exit 1
+touch "$LOG_FILE" || exit 1
+chmod 600 "$LOG_FILE" || exit 1
+command -v flock >/dev/null 2>&1 || { echo "错误：请先安装 util-linux（flock）。"; exit 1; }
+exec 9>"$BASE_DIR/.lock"
+flock -n 9 || { echo "错误：已有工具实例正在运行，请先退出该实例。"; exit 1; }
 
-if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+if [[ "$CLI_AUDIT" == 1 ]]; then
+    exec 3</dev/null 4>&1
+elif ! { exec 3</dev/tty 4>/dev/tty; } 2>/dev/null; then
     echo "错误：需要在交互式终端中运行此脚本。"
     exit 1
 fi
-exec 3</dev/tty 4>/dev/tty
 
 say() { printf '%s\n' "$*" >&4; }
-ask() { local __var="$1"; shift; printf '%s' "$*" >&4; IFS= read -r "$__var" <&3; }
+ask() {
+    local __var="$1"
+    shift
+    printf '%s' "$*" >&4
+    IFS= read -r "${__var?}" <&3 || { say "输入已断开，停止操作。"; exit 2; }
+}
 confirm_y() {
     local ans
     while true; do
@@ -230,6 +248,7 @@ check_dependencies() {
     done
     ((${#missing[@]} == 0)) && return 0
     say "检测到缺少基础依赖：${missing[*]}"
+    [[ "$CLI_AUDIT" != 1 ]] || { say "只读审计不会安装依赖，请手工安装后重试。"; return 1; }
     for cmd in "${missing[@]}"; do
         pkg="${pkg_for[$cmd]}"
         if [[ "$seen" != *" $pkg "* ]]; then pkgs+=("$pkg"); seen+="$pkg "; fi
@@ -292,7 +311,9 @@ load_state() {
 }
 
 save_state() {
+    local tmp
     umask 077
+    tmp="$(mktemp "$BASE_DIR/.state.XXXXXX")" || return 1
     {
         printf 'SSH_PORT=%q\n' "${SSH_PORT:-}"
         printf 'PREVIOUS_SSH_PORT=%q\n' "${PREVIOUS_SSH_PORT:-}"
@@ -309,7 +330,8 @@ save_state() {
         printf 'SSH_TXN_DIR=%q\n' "${SSH_TXN_DIR:-}"
         printf 'SSH_TXN_OLD_PORT=%q\n' "${SSH_TXN_OLD_PORT:-}"
         printf 'SSH_TXN_NEW_PORT=%q\n' "${SSH_TXN_NEW_PORT:-}"
-    } > "$STATE_FILE"
+    } > "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$STATE_FILE" || { rm -f "$tmp"; return 1; }
 }
 load_state
 
@@ -401,13 +423,30 @@ ufw_rule_state() {
     local spec="$1" proto="$2" out
     is_ufw_installed || { printf 'none'; return 0; }
     out="$(ufw status 2>/dev/null || true)"
-    if grep -Eiq "^[[:space:]]*${spec}/${proto}([[:space:]]|$).*DENY" <<<"$out"; then
-        printf 'deny'
-    elif grep -Eiq "^[[:space:]]*${spec}/${proto}([[:space:]]|$).*ALLOW" <<<"$out"; then
-        printf 'allow'
-    else
-        printf 'none'
-    fi
+    # Inspect saved simple rules too: `status` hides them while UFW is inactive.
+    out+=$'\n'"$(ufw show added 2>/dev/null | awk -v spec="$spec" -v proto="$proto" '
+        $1=="ufw" && $2 ~ /^(allow|deny|reject)$/ && $3 ~ /^[0-9:]+(\/(tcp|udp))?$/ {
+            print $3, toupper($2), "IN Anywhere"
+            next
+        }
+        $1=="ufw" && $2 ~ /^(deny|reject)$/ {
+            # Unknown saved rule syntax: require manual review rather than
+            # accidentally superseding a source/interface/application denial.
+            print spec "/" proto, "DENY IN Anywhere"
+        }' || true)"
+    awk -v spec="$spec" -v proto="$proto" '
+        function low(x, a) {split(x,a,":"); return a[1]+0}
+        function high(x, a,n) {n=split(x,a,":"); return a[n]+0}
+        {
+            n=split($1,p,"/"); rule=p[1]
+            if (rule !~ /^[0-9]+(:[0-9]+)?$/ || (n>1 && p[2]!=proto)) next
+            if (low(rule)>high(spec) || high(rule)<low(spec)) next
+            if ($0 ~ / (DENY|REJECT)( IN)? /) deny=1
+            # A source-scoped ALLOW is not evidence of general reachability.
+            if (rule==spec && $0 ~ / ALLOW IN Anywhere( \(v6\))?$/) allow=1
+        }
+        END {print deny ? "deny" : (allow ? "allow" : "none")}
+    ' <<<"$out"
 }
 
 firewalld_zone() {
@@ -467,7 +506,7 @@ is_loopback_bind() {
     a="${a#[}"
     a="${a%]}"
     case "$a" in
-        127.*|::1|localhost|127.*%lo|::1%lo) return 0 ;;
+        127.*|::1|localhost|::1%lo) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -520,10 +559,10 @@ pf_add_target() {
 }
 
 collect_public_listeners() {
-    local line proto state recvq sendq local_ep peer_ep rest port bind proc
+    local line proto state _recvq _sendq local_ep _peer_ep rest port bind proc
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        read -r proto state recvq sendq local_ep peer_ep rest <<< "$line"
+        read -r proto state _recvq _sendq local_ep _peer_ep rest <<< "$line"
         [[ "$proto" == "tcp" || "$proto" == "udp" ]] || continue
         port="${local_ep##*:}"
         bind="${local_ep%:*}"
@@ -749,7 +788,7 @@ ufw_safe_allow() {
                             say "❌ 仍检测到 DENY，可能是带来源地址的复杂规则。为避免错误覆盖，请人工处理。"
                             return 2
                         fi
-                        ufw allow "$spec/$proto" comment "$label" >/dev/null 2>&1 || ufw allow "$spec/$proto" >/dev/null
+                        ufw allow "$spec/$proto" comment "$label" >/dev/null 2>&1 || ufw allow "$spec/$proto" >/dev/null || return 1
                         say "✅ 已改为 ALLOW：$spec/$proto"
                         return 0
                         ;;
@@ -766,7 +805,7 @@ ufw_safe_allow() {
                         say "⚠️ 仍存在 DENY，未自动覆盖复杂规则：$spec/$proto"
                         return 0
                     fi
-                    ufw allow "$spec/$proto" comment "$label" >/dev/null 2>&1 || ufw allow "$spec/$proto" >/dev/null
+                    ufw allow "$spec/$proto" comment "$label" >/dev/null 2>&1 || ufw allow "$spec/$proto" >/dev/null || return 1
                     say "✅ 已改为 ALLOW：$spec/$proto"
                 else
                     say "✅ 已保留原 DENY：$spec/$proto"
@@ -775,7 +814,7 @@ ufw_safe_allow() {
             fi
             ;;
         *)
-            ufw allow "$spec/$proto" comment "$label" >/dev/null 2>&1 || ufw allow "$spec/$proto" >/dev/null
+            ufw allow "$spec/$proto" comment "$label" >/dev/null 2>&1 || ufw allow "$spec/$proto" >/dev/null || return 1
             say "✅ 已新增 ALLOW：$spec/$proto"
             return 0
             ;;
@@ -791,7 +830,7 @@ ufw_allow_protected_business_ports() {
         [[ "$class" == "SSH" ]] && continue
         case "$proto" in
             tcp|udp)
-                ufw_safe_allow "$port" "$proto" "Existing service - VPS Security" "0" || true
+                ufw_safe_allow "$port" "$proto" "Existing service - VPS Security" "0" || return 1
                 ;;
         esac
     done < "$PROTECTED_PORTS_FILE"
@@ -1051,7 +1090,8 @@ show_security_status() {
     say "    系统重启：$(status_reboot_required)"
 }
 backup_ssh() {
-    local dir="$BACKUP_ROOT/ssh-$(date +%Y%m%d-%H%M%S)-$RANDOM"
+    local dir
+    dir="$BACKUP_ROOT/ssh-$(date +%Y%m%d-%H%M%S)-$RANDOM"
     mkdir -p "$dir"
     chmod 700 "$dir"
     cp -a "$SSHD_CONFIG" "$dir/sshd_config"
@@ -1071,18 +1111,30 @@ backup_ssh() {
     printf '%s\n' "$dir"
 }
 
-_unit_enabled_state() { systemctl is-enabled "$1" 2>/dev/null || printf 'disabled'; }
-_unit_active_state() { systemctl is-active "$1" 2>/dev/null || printf 'inactive'; }
+_unit_enabled_state() {
+    local state
+    state="$(systemctl is-enabled "$1" 2>/dev/null || true)"
+    printf '%s' "${state:-disabled}"
+}
+_unit_active_state() {
+    local state
+    state="$(systemctl is-active "$1" 2>/dev/null || true)"
+    printf '%s' "${state:-inactive}"
+}
 
 begin_ssh_transaction() {
     local old_port="$1" new_port="$2" dir
+    if [[ -n "${SSH_TXN_DIR:-}" && -d "$SSH_TXN_DIR" && ! -f "$SSH_TXN_DIR/COMMITTED" && ! -f "$SSH_TXN_DIR/ROLLED_BACK" ]]; then
+        say "❌ 存在未完成的 SSH 事务，请先执行第 5 项确认或回滚。"
+        return 1
+    fi
     dir="$TXN_ROOT/ssh-$(date +%Y%m%d-%H%M%S)-$RANDOM"
-    mkdir -p "$dir"
-    chmod 700 "$dir"
+    mkdir -p "$dir" || return 1
+    chmod 700 "$dir" || return 1
 
-    cp -a "$SSHD_CONFIG" "$dir/sshd_config"
+    cp -a "$SSHD_CONFIG" "$dir/sshd_config" || return 1
     if [[ -d /etc/ssh/sshd_config.d ]]; then
-        cp -a /etc/ssh/sshd_config.d "$dir/"
+        cp -a /etc/ssh/sshd_config.d "$dir/" || return 1
         printf '1\n' > "$dir/had-sshd-config-d"
     fi
     if [[ -d /root/.ssh ]]; then
@@ -1090,32 +1142,34 @@ begin_ssh_transaction() {
     fi
     if [[ -f /root/.ssh/authorized_keys ]]; then
         mkdir -p "$dir/root-ssh"
-        cp -a /root/.ssh/authorized_keys "$dir/root-ssh/authorized_keys"
+        cp -a /root/.ssh/authorized_keys "$dir/root-ssh/authorized_keys" || return 1
         printf '1\n' > "$dir/had-authorized-keys"
     else
         printf '1\n' > "$dir/had-no-authorized-keys"
     fi
-    if [[ -f "$STATE_FILE" ]]; then cp -a "$STATE_FILE" "$dir/state.env"; fi
+    if [[ -f "$STATE_FILE" ]]; then cp -a "$STATE_FILE" "$dir/state.env" || return 1; fi
 
     if [[ -f /etc/fail2ban/jail.d/vps-security-sshd.local ]]; then
-        cp -a /etc/fail2ban/jail.d/vps-security-sshd.local "$dir/fail2ban-sshd.local"
+        cp -a /etc/fail2ban/jail.d/vps-security-sshd.local "$dir/fail2ban-sshd.local" || return 1
         printf '1\n' > "$dir/had-fail2ban-file"
     fi
 
     if is_ufw_installed; then
-        tar -C / -czf "$dir/ufw-config.tgz" etc/ufw etc/default/ufw 2>/dev/null || true
+        tar -C / -czf "$dir/ufw-config.tgz" etc/ufw etc/default/ufw 2>/dev/null || return 1
         ufw status numbered > "$dir/ufw-status.txt" 2>&1 || true
         printf '1\n' > "$dir/had-ufw"
     fi
     if command -v firewall-cmd >/dev/null 2>&1 || [[ -d /etc/firewalld ]]; then
-        tar -C / -czf "$dir/firewalld-config.tgz" etc/firewalld 2>/dev/null || true
+        if [[ -d /etc/firewalld ]]; then
+            tar -C / -czf "$dir/firewalld-config.tgz" etc/firewalld 2>/dev/null || return 1
+        fi
         command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --list-all-zones > "$dir/firewalld-zones.txt" 2>&1 || true
         printf '1\n' > "$dir/had-firewalld"
     fi
     command -v iptables-save >/dev/null 2>&1 && iptables-save > "$dir/iptables-save.txt" 2>&1 || true
     command -v nft >/dev/null 2>&1 && nft list ruleset > "$dir/nft-ruleset.txt" 2>&1 || true
 
-    cat > "$dir/meta.env" <<EOF
+    cat > "$dir/meta.env" <<EOF || return 1
 OLD_PORT=$(printf '%q' "$old_port")
 NEW_PORT=$(printf '%q' "$new_port")
 SSH_SERVICE_ENABLED=$(printf '%q' "$(_unit_enabled_state "$SSH_SERVICE.service")")
@@ -1127,12 +1181,13 @@ FAIL2BAN_ACTIVE=$(printf '%q' "$(_unit_active_state fail2ban.service)")
 UFW_ACTIVE=$(is_ufw_active && printf yes || printf no)
 FIREWALLD_ACTIVE=$(is_firewalld_active && printf yes || printf no)
 EOF
-    chmod 600 "$dir/meta.env"
+    [[ -s "$dir/meta.env" ]] || return 1
+    chmod 600 "$dir/meta.env" || return 1
     SSH_TXN_DIR="$dir"
     SSH_TXN_OLD_PORT="$old_port"
     SSH_TXN_NEW_PORT="$new_port"
     PORT_BACKUP="$dir"
-    save_state
+    save_state || return 1
     log "开始 SSH 事务：$old_port -> $new_port；事务目录 $dir"
     printf '%s\n' "$dir"
 }
@@ -1149,7 +1204,7 @@ _restore_enable_state() {
 restore_ssh_config() {
     local dir="$1"
     [[ -f "$dir/sshd_config" ]] || { say "❌ 找不到 SSH 备份：$dir"; return 1; }
-    cp -a "$dir/sshd_config" "$SSHD_CONFIG"
+    cp -a "$dir/sshd_config" "$SSHD_CONFIG" || return 1
     if [[ -d "$dir/sshd_config.d" ]]; then
         rm -rf /etc/ssh/sshd_config.d
         cp -a "$dir/sshd_config.d" /etc/ssh/
@@ -1166,10 +1221,10 @@ rollback_ssh_transaction() {
     source "$dir/meta.env"
     say "正在完整回滚 SSH 事务：$dir"
 
-    cp -a "$dir/sshd_config" "$SSHD_CONFIG"
+    cp -a "$dir/sshd_config" "$SSHD_CONFIG" || return 1
     if [[ -f "$dir/had-sshd-config-d" && -d "$dir/sshd_config.d" ]]; then
         rm -rf /etc/ssh/sshd_config.d
-        cp -a "$dir/sshd_config.d" /etc/ssh/
+        cp -a "$dir/sshd_config.d" /etc/ssh/ || return 1
     fi
 
     if [[ -f "$dir/had-authorized-keys" ]]; then
@@ -1193,24 +1248,27 @@ rollback_ssh_transaction() {
     fi
 
     if [[ -f "$dir/ufw-config.tgz" && -x "$(command -v ufw 2>/dev/null || true)" ]]; then
+        tar -tzf "$dir/ufw-config.tgz" >/dev/null 2>&1 || { say "❌ UFW 备份损坏，停止恢复。"; return 1; }
         rm -rf /etc/ufw
-        tar -C / -xzf "$dir/ufw-config.tgz" 2>/dev/null || true
+        tar -C / -xzf "$dir/ufw-config.tgz" 2>/dev/null || return 1
         if [[ "${UFW_ACTIVE:-no}" == "yes" ]]; then
-            ufw --force enable >/dev/null 2>&1 || true
-            ufw reload >/dev/null 2>&1 || true
+            ufw --force enable >/dev/null 2>&1 || return 1
+            ufw reload >/dev/null 2>&1 || return 1
         else
-            ufw --force disable >/dev/null 2>&1 || true
+            ufw --force disable >/dev/null 2>&1 || return 1
         fi
     fi
 
-    if [[ -f "$dir/firewalld-config.tgz" && -d /etc ]]; then
-        rm -rf /etc/firewalld
-        tar -C / -xzf "$dir/firewalld-config.tgz" 2>/dev/null || true
-        if command -v firewall-cmd >/dev/null 2>&1; then
-            if [[ "${FIREWALLD_ACTIVE:-no}" == "yes" ]]; then
-                systemctl start firewalld >/dev/null 2>&1 || true
-                firewall-cmd --reload >/dev/null 2>&1 || true
-            fi
+    # Undo only the added SSH allow; a reload would destroy unrelated runtime rules.
+    if [[ -f "$dir/firewalld-zone" ]] && command -v firewall-cmd >/dev/null 2>&1; then
+        local fw_zone fw_port
+        fw_zone="$(cat "$dir/firewalld-zone")"
+        fw_port="${NEW_PORT}/tcp"
+        if [[ ! -f "$dir/firewalld-had-runtime-port" ]]; then
+            firewall-cmd --zone="$fw_zone" --remove-port="$fw_port" >/dev/null || return 1
+        fi
+        if [[ ! -f "$dir/firewalld-had-permanent-port" ]]; then
+            firewall-cmd --permanent --zone="$fw_zone" --remove-port="$fw_port" >/dev/null || return 1
         fi
     fi
 
@@ -1268,7 +1326,7 @@ rollback_ssh_transaction() {
 commit_ssh_transaction() {
     local dir="${1:-${SSH_TXN_DIR:-}}"
     [[ -n "$dir" && -d "$dir" ]] || return 0
-    printf '%s\n' "COMMITTED $(date '+%F %T')" > "$dir/COMMITTED"
+    printf '%s\n' "COMMITTED $(date '+%F %T')" > "$dir/COMMITTED" || return 1
     log "SSH 事务提交：$dir"
     SSH_TXN_DIR=""
     SSH_TXN_OLD_PORT=""
@@ -1278,13 +1336,13 @@ commit_ssh_transaction() {
 }
 remove_managed_block() {
     local tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp)" || return 1
     awk -v b="$MANAGED_BEGIN" -v e="$MANAGED_END" '
         $0==b {skip=1; next}
         $0==e {skip=0; next}
         !skip {print}
-    ' "$SSHD_CONFIG" > "$tmp"
-    cat "$tmp" > "$SSHD_CONFIG"
+    ' "$SSHD_CONFIG" > "$tmp" || { rm -f "$tmp"; return 1; }
+    cat "$tmp" > "$SSHD_CONFIG" || { rm -f "$tmp"; return 1; }
     rm -f "$tmp"
 }
 
@@ -1294,7 +1352,7 @@ comment_existing_port_directives() {
     local files=("$SSHD_CONFIG" /etc/ssh/sshd_config.d/*.conf)
     for f in "${files[@]}"; do
         [[ -f "$f" ]] || continue
-        sed -Ei 's/^([[:space:]]*)Port[[:space:]]+([0-9]+)([[:space:]]*(#.*)?)$/\1# VPS-SECURITY disabled previous Port \2\3/' "$f"
+        sed -Ei 's/^([[:space:]]*)Port[[:space:]]+([0-9]+)([[:space:]]*(#.*)?)$/\1# VPS-SECURITY disabled previous Port \2\3/' "$f" || return 1
     done
     shopt -u nullglob
 }
@@ -1302,9 +1360,9 @@ comment_existing_port_directives() {
 write_sshd_managed_block() {
     local port="$1" locked="$2"
     local tmp
-    remove_managed_block
-    comment_existing_port_directives
-    tmp="$(mktemp)"
+    remove_managed_block || return 1
+    comment_existing_port_directives || return 1
+    tmp="$(mktemp)" || return 1
     {
         echo "$MANAGED_BEGIN"
         echo "Port $port"
@@ -1314,7 +1372,7 @@ write_sshd_managed_block() {
             echo "KbdInteractiveAuthentication no"
             echo "ChallengeResponseAuthentication no"
             echo "PermitEmptyPasswords no"
-            echo "PermitRootLogin prohibit-password"
+            # Preserve the administrator's existing PermitRootLogin policy.
         fi
         if [[ "${KEEPALIVE_ENABLED:-0}" == "1" ]]; then
             echo "ClientAliveInterval 60"
@@ -1324,8 +1382,8 @@ write_sshd_managed_block() {
         echo "$MANAGED_END"
         echo
         cat "$SSHD_CONFIG"
-    } > "$tmp"
-    cat "$tmp" > "$SSHD_CONFIG"
+    } > "$tmp" || { rm -f "$tmp"; return 1; }
+    cat "$tmp" > "$SSHD_CONFIG" || { rm -f "$tmp"; return 1; }
     rm -f "$tmp"
 }
 prepare_ssh_service_mode() {
@@ -1356,8 +1414,16 @@ allow_ssh_port_in_firewall() {
             ;;
         firewalld)
             zone="$(firewalld_zone)"
-            firewall-cmd --zone="$zone" --add-port="$port/tcp" >/dev/null || return 1
-            firewall-cmd --permanent --zone="$zone" --add-port="$port/tcp" >/dev/null || return 1
+            if [[ -n "${SSH_TXN_DIR:-}" ]]; then
+                printf '%s\n' "$zone" > "$SSH_TXN_DIR/firewalld-zone" || return 1
+                if firewall-cmd --zone="$zone" --query-port="$port/tcp" >/dev/null 2>&1; then
+                    touch "$SSH_TXN_DIR/firewalld-had-runtime-port" || return 1
+                fi
+                if firewall-cmd --permanent --zone="$zone" --query-port="$port/tcp" >/dev/null 2>&1; then
+                    touch "$SSH_TXN_DIR/firewalld-had-permanent-port" || return 1
+                fi
+            fi
+            firewalld_allow_safe "$port" tcp "SSH - VPS Security" || return 1
             say "✅ firewalld 已放行新的 SSH 端口：$port/tcp（zone=$zone）"
             ;;
         nftables|iptables)
@@ -1440,7 +1506,6 @@ remove_old_ssh_firewall_rule() {
                 if [[ "$choice" == '2' ]]; then
                     firewall-cmd --zone="$zone" --remove-port="$old/tcp" >/dev/null 2>&1 || true
                     firewall-cmd --permanent --zone="$zone" --remove-port="$old/tcp" >/dev/null 2>&1 || true
-                    firewall-cmd --reload >/dev/null 2>&1 || true
                     say "✅ 已删除旧 SSH 端口放行：$old/tcp"
                 else
                     say "ℹ️ 已保留旧 SSH 端口防火墙规则：$old/tcp"
@@ -1482,18 +1547,18 @@ EOF
 }
 
 detect_business_services() {
-    local found=()
-    command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker 2>/dev/null && found+=("Docker")
-    { systemctl is-active --quiet nginx 2>/dev/null || pgrep -x nginx >/dev/null 2>&1; } && found+=("Nginx")
-    pgrep -x openresty >/dev/null 2>&1 && found+=("OpenResty")
-    [[ -d /opt/1panel || -d /opt/1Panel ]] && found+=("1Panel")
-    { systemctl is-active --quiet x-ui 2>/dev/null || systemctl is-active --quiet 3x-ui 2>/dev/null; } && found+=("x-ui/3x-ui")
-    { pgrep -x mysqld >/dev/null 2>&1 || pgrep -x mariadbd >/dev/null 2>&1; } && found+=("MySQL/MariaDB")
-    pgrep -x postgres >/dev/null 2>&1 && found+=("PostgreSQL")
-    pgrep -x redis-server >/dev/null 2>&1 && found+=("Redis")
-    pgrep -f '[k]omari' >/dev/null 2>&1 && found+=("Komari")
-    pgrep -f '[q]inglong' >/dev/null 2>&1 && found+=("QingLong")
-    printf '%s\n' "${found[@]}" | awk 'NF&&!seen[$0]++'
+    local services_found=()
+    command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker 2>/dev/null && services_found+=("Docker")
+    { systemctl is-active --quiet nginx 2>/dev/null || pgrep -x nginx >/dev/null 2>&1; } && services_found+=("Nginx")
+    pgrep -x openresty >/dev/null 2>&1 && services_found+=("OpenResty")
+    [[ -d /opt/1panel || -d /opt/1Panel ]] && services_found+=("1Panel")
+    { systemctl is-active --quiet x-ui 2>/dev/null || systemctl is-active --quiet 3x-ui 2>/dev/null; } && services_found+=("x-ui/3x-ui")
+    { pgrep -x mysqld >/dev/null 2>&1 || pgrep -x mariadbd >/dev/null 2>&1; } && services_found+=("MySQL/MariaDB")
+    pgrep -x postgres >/dev/null 2>&1 && services_found+=("PostgreSQL")
+    pgrep -x redis-server >/dev/null 2>&1 && services_found+=("Redis")
+    pgrep -f '[k]omari' >/dev/null 2>&1 && services_found+=("Komari")
+    pgrep -f '[q]inglong' >/dev/null 2>&1 && services_found+=("QingLong")
+    printf '%s\n' "${services_found[@]}" | awk 'NF&&!seen[$0]++'
 }
 
 step1_update_system() {
@@ -1590,7 +1655,7 @@ step3_random_ssh_port() {
         ask input "请输入自定义端口；直接回车=重新随机："
         if [[ -z "$input" ]]; then
             continue
-        elif [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1024 && input <= 65535 )); then
+        elif input="$(normalize_decimal_port "$input")" && (( input >= 1024 )); then
             if port_is_listening "$input"; then
                 say "❌ 端口 $input 已被占用。"
                 continue
@@ -1604,7 +1669,7 @@ step3_random_ssh_port() {
 
     [[ "$new" != "$current" ]] || { say "ℹ️ 新端口与当前端口相同，无需修改。"; return 0; }
 
-    begin_ssh_transaction "$current" "$new" >/dev/null
+    begin_ssh_transaction "$current" "$new" >/dev/null || return 1
     txn="$SSH_TXN_DIR"
     PREVIOUS_SSH_PORT="$current"
     PORT_BACKUP="$txn"
@@ -1628,7 +1693,10 @@ step3_random_ssh_port() {
 
     locked="0"
     sshd_password_auth_disabled && locked="1"
-    write_sshd_managed_block "$new" "$locked"
+    if ! write_sshd_managed_block "$new" "$locked"; then
+        rollback_ssh_transaction "$txn"
+        return 1
+    fi
     prepare_ssh_service_mode
 
     if ! "$SSHD_BIN" -t; then
@@ -1800,18 +1868,16 @@ step6_disable_password_auth() {
         return 1
     fi
     if [[ "${KEY_TESTED:-0}" != "1" ]]; then
-        say "⚠️ 没有记录到‘新窗口密钥登录成功’。"
-        if ! confirm_y "你是否已经亲自测试密钥登录成功，并继续？"; then
-            say "已取消。"
-            return 1
-        fi
-        KEY_TESTED="1"
-        save_state
+        say "❌ 请先执行第 5 项，在新窗口验证密钥登录成功，再关闭密码认证。"
+        return 1
     fi
 
-    begin_ssh_transaction "$port" "$port" >/dev/null
+    begin_ssh_transaction "$port" "$port" >/dev/null || return 1
     txn="$SSH_TXN_DIR"
-    write_sshd_managed_block "$port" "1"
+    if ! write_sshd_managed_block "$port" "1"; then
+        rollback_ssh_transaction "$txn"
+        return 1
+    fi
 
     if ! "$SSHD_BIN" -t; then
         say "❌ SSH 配置无效，正在回滚。"
@@ -1834,35 +1900,39 @@ step6_disable_password_auth() {
 
     PASSWORD_LOCKED="1"
     SSH_PORT="$port"
+    KEY_TESTED="0"
     save_state
-    commit_ssh_transaction "$txn"
-    log "SSH 密码认证已关闭，root 仅允许非密码方式登录"
+    log "SSH 密码认证已关闭；等待第 5 项新窗口确认，事务 $txn"
     say "✅ PasswordAuthentication no"
     say "✅ KbdInteractiveAuthentication no"
-    say "✅ PermitRootLogin prohibit-password"
-    say "⚠️ 当前窗口先别关，再新开一个窗口用密钥测试一次。"
+    say "✅ 保留原有 PermitRootLogin 策略"
+    say "⚠️ 当前窗口先别关，再新开一个窗口用密钥测试，然后执行第 5 项提交或回滚。"
 }
 firewalld_rich_conflict() {
-    local port="$1" proto="$2" zone rules
+    local zone rules
     zone="$(firewalld_zone)"
-    rules="$(firewall-cmd --zone="$zone" --list-rich-rules 2>/dev/null || true)"
-    grep -Eiq "port port=\"?${port}\"? protocol=\"?${proto}\"?.*(reject|drop)" <<<"$rules"
+    rules="$(firewall-cmd --zone="$zone" --list-rich-rules 2>/dev/null)" || return 0
+    local permanent_rules
+    permanent_rules="$(firewall-cmd --permanent --zone="$zone" --list-rich-rules 2>/dev/null)" || return 0
+    rules+=$'\n'"$permanent_rules"
+    # Source, service, range, and inverted rules need a real policy evaluator.
+    # Fail closed when any rich rejection exists instead of claiming reachability.
+    grep -Eiq '(^|[[:space:]])(reject|drop)([[:space:]]|$)' <<<"$rules"
 }
 
 firewalld_allow_safe() {
     local port="$1" proto="$2" label="$3" zone choice
     zone="$(firewalld_zone)"
     if firewalld_rich_conflict "$port" "$proto"; then
-        say "⚠️ firewalld 检测到针对 $port/$proto 的 rich-rule reject/drop。"
+        say "⚠️ firewalld 存在 rich-rule reject/drop 或规则不可读取，无法安全确认 $port/$proto。"
         say "本工具不会自动删除复杂拒绝规则。"
         say "1. 保持拒绝规则（推荐）"
         say "0. 跳过"
         choose_num choice "请选择 [默认1]：" "1 0" "1"
-        return 0
+        return 2
     fi
     if firewall-cmd --zone="$zone" --query-port="$port/$proto" >/dev/null 2>&1; then
         say "ℹ️ firewalld 已放行：$port/$proto"
-        return 0
     fi
     firewall-cmd --zone="$zone" --add-port="$port/$proto" >/dev/null || return 1
     firewall-cmd --permanent --zone="$zone" --add-port="$port/$proto" >/dev/null || return 1
@@ -1875,17 +1945,18 @@ step7_configure_ufw() {
     say "7. 安装/配置主机防火墙"
     say "=================================================="
 
-    ensure_business_preflight
+    ensure_business_preflight || return 1
     local backend ports p zone proto port class procs binds
     backend="$(detect_firewall_backend)"
     say "检测到防火墙后端：$backend"
 
     if [[ "$backend" == "none" && "$OS_FAMILY" == "rhel" ]]; then
-        say "当前 RPM 系统未检测到主机防火墙，正在安装并启动 firewalld..."
+        say "当前 RPM 系统未检测到主机防火墙，正在安装 firewalld..."
         pkg_refresh || return 1
         pkg_install firewalld || return 1
-        systemctl enable --now firewalld >/dev/null 2>&1 || return 1
-        backend="firewalld"
+        say "为避免先启动默认拒绝策略导致 SSH/业务中断，本工具不会自动启动未运行的 firewalld。"
+        say "请通过控制台使用 firewall-offline-cmd 预先配置 SSH/业务端口及接口 zone，再启动 firewalld 并重试。"
+        return 1
     fi
 
     case "$backend" in
@@ -1897,14 +1968,16 @@ step7_configure_ufw() {
             zone="$(firewalld_zone)"
             say "使用现有 firewalld，不安装/启用 UFW。默认 zone：$zone"
             ports="$(get_sshd_ports)"; [[ -n "$ports" ]] || ports="$(get_primary_ssh_port)"
-            while read -r p; do [[ -n "$p" ]] && firewalld_allow_safe "$p" tcp "SSH - VPS Security"; done <<< "$ports"
+            while read -r p; do
+                [[ -n "$p" ]] || continue
+                firewalld_allow_safe "$p" tcp "SSH - VPS Security" || return 1
+            done <<< "$ports"
             if [[ -f "$PROTECTED_PORTS_FILE" ]]; then
                 while IFS=$'\t' read -r proto port class procs binds; do
                     [[ -n "$port" && "$class" != "SSH" ]] || continue
-                    firewalld_allow_safe "$port" "$proto" "Existing service - VPS Security"
+                    firewalld_allow_safe "$port" "$proto" "Existing service - VPS Security" || return 1
                 done < "$PROTECTED_PORTS_FILE"
             fi
-            firewall-cmd --reload >/dev/null || return 1
             log "firewalld 已补齐 SSH 与确认保留的业务端口；zone=$zone"
             say "✅ firewalld 配置完成；未覆盖已有 rich-rule 拒绝规则。"
             firewall-cmd --zone="$zone" --list-all >&4 || true
@@ -1927,10 +2000,7 @@ step7_configure_ufw() {
         pkg_install ufw || return 1
     fi
 
-    # 不 reset。只设置默认策略，并补齐当前 SSH + 业务保护端口。
-    ufw default deny incoming >/dev/null || return 1
-    ufw default allow outgoing >/dev/null || return 1
-
+    # Stage SSH and business allows before a live default policy can take effect.
     ports="$(get_sshd_ports)"; [[ -n "$ports" ]] || ports="$(get_primary_ssh_port)"
     while read -r p; do
         [[ -n "$p" ]] || continue
@@ -1940,7 +2010,9 @@ step7_configure_ufw() {
         fi
     done <<< "$ports"
 
-    ufw_allow_protected_business_ports
+    ufw_allow_protected_business_ports || return 1
+    ufw default deny incoming >/dev/null || return 1
+    ufw default allow outgoing >/dev/null || return 1
 
     if ! is_ufw_active; then
         ufw --force enable >/dev/null || return 1
@@ -2036,11 +2108,11 @@ step10_scan_public_ports() {
     say "=================================================="
     say "下面列出所有非回环 TCP/UDP 监听；127.0.0.1 / ::1 不视为公网业务端口。"
     say
-    local line proto state recvq sendq local_ep peer_ep rest bind
+    local line proto state _recvq _sendq local_ep _peer_ep rest bind
     local found=0
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        read -r proto state recvq sendq local_ep peer_ep rest <<< "$line"
+        read -r proto state _recvq _sendq local_ep _peer_ep rest <<< "$line"
         bind="${local_ep%:*}"
         bind="${bind#[}"
         bind="${bind%]}"
@@ -2063,7 +2135,8 @@ step11_security_report() {
     say "11. 输出最终安全检查报告"
     say "=================================================="
 
-    local report="$REPORT_DIR/security-report-$(date +%Y%m%d-%H%M%S).txt"
+    local report
+    report="$REPORT_DIR/security-report-$(date +%Y%m%d-%H%M%S).txt"
     local eff backend
     eff="$($SSHD_BIN -T -C user=root,host=localhost,addr=127.0.0.1 2>/dev/null || true)"
     backend="$(detect_firewall_backend)"
@@ -2224,17 +2297,27 @@ ensure_firewall_manager_ready() {
 }
 ensure_ufw_ready_for_port_manager() { ensure_firewall_manager_ready; }
 
+normalize_decimal_port() {
+    local x="$1"
+    [[ "$x" =~ ^[0-9]+$ ]] || return 1
+    while [[ ${#x} -gt 1 && "$x" == 0* ]]; do x="${x#0}"; done
+    [[ ${#x} -le 5 ]] || return 1
+    (( 10#$x >= 1 && 10#$x <= 65535 )) || return 1
+    printf '%d' "$((10#$x))"
+}
+
 normalize_port_spec() {
     local x="$1"
     x="${x// /}"
     if [[ "$x" =~ ^[0-9]+$ ]]; then
-        (( x >= 1 && x <= 65535 )) || return 1
-        printf '%s\n' "$x"
+        normalize_decimal_port "$x" || return 1
         return 0
     fi
     if [[ "$x" =~ ^([0-9]+)-([0-9]+)$ ]]; then
         local a="${BASH_REMATCH[1]}" b="${BASH_REMATCH[2]}"
-        (( a >= 1 && a <= 65535 && b >= 1 && b <= 65535 && a <= b )) || return 1
+        a="$(normalize_decimal_port "$a")" || return 1
+        b="$(normalize_decimal_port "$b")" || return 1
+        (( a <= b )) || return 1
         printf '%s:%s\n' "$a" "$b"
         return 0
     fi
@@ -2302,7 +2385,7 @@ apply_port_rule() {
                         else
                             ufw delete allow "$spec/$proto" >/dev/null 2>&1 || true
                             ufw deny "$spec/$proto" >/dev/null || return 1
-                            say "✅ 已封禁入站：$spec/$proto"
+                            say "✅ 已添加入站 DENY：$spec/$proto；更早的范围/来源 ALLOW 仍需人工复核。"
                         fi
                         ;;
                     both)
@@ -2320,7 +2403,7 @@ apply_port_rule() {
                         else
                             firewall-cmd --zone="$zone" --remove-port="$fw_spec/$proto" >/dev/null 2>&1 || true
                             firewall-cmd --permanent --zone="$zone" --remove-port="$fw_spec/$proto" >/dev/null 2>&1 || true
-                            say "✅ 已移除 firewalld 放行：$fw_spec/$proto"
+                            say "✅ 已移除 firewalld 显式端口放行：$fw_spec/$proto；service/rich/policy 仍可能放行。"
                             if firewalld_rich_conflict "$fw_spec" "$proto"; then :; fi
                         fi
                         ;;
@@ -2339,7 +2422,7 @@ apply_port_rule() {
 
     case "$backend" in
         ufw|ufw-inactive) ufw reload >/dev/null 2>&1 || true ;;
-        firewalld) firewall-cmd --reload >/dev/null 2>&1 || true ;;
+        firewalld) : ;; # runtime + permanent rules were updated individually
     esac
 }
 
@@ -2537,7 +2620,8 @@ print_docker_mappings() {
 }
 
 docker_firewall_backup() {
-    local dir="$BACKUP_ROOT/docker-firewall-$(date +%Y%m%d-%H%M%S)-$RANDOM"
+    local dir
+    dir="$BACKUP_ROOT/docker-firewall-$(date +%Y%m%d-%H%M%S)-$RANDOM"
     mkdir -p "$dir"; chmod 700 "$dir"
     command -v iptables-save >/dev/null 2>&1 && iptables-save > "$dir/iptables-save.txt" 2>&1 || true
     command -v ip6tables-save >/dev/null 2>&1 && ip6tables-save > "$dir/ip6tables-save.txt" 2>&1 || true
@@ -2599,11 +2683,11 @@ ssh_keepalive_manager() {
     choose_num c "请选择：" "1 2 0" "0"
     [[ "$c" != "0" ]] || return 0
     port="$(get_primary_ssh_port)"; locked=0; sshd_password_auth_disabled && locked=1
-    begin_ssh_transaction "$port" "$port" >/dev/null; txn="$SSH_TXN_DIR"
+    begin_ssh_transaction "$port" "$port" >/dev/null || return 1
+    txn="$SSH_TXN_DIR"
     [[ "$c" == "1" ]] && KEEPALIVE_ENABLED="1" || KEEPALIVE_ENABLED="0"
     save_state
-    write_sshd_managed_block "$port" "$locked"
-    if ! "$SSHD_BIN" -t || ! systemctl restart "$SSH_SERVICE"; then
+    if ! write_sshd_managed_block "$port" "$locked" || ! "$SSHD_BIN" -t || ! systemctl restart "$SSH_SERVICE"; then
         say "❌ KeepAlive 修改失败，正在回滚。"
         rollback_ssh_transaction "$txn"
         return 1
@@ -2643,13 +2727,18 @@ ipv6_firewall_manager() {
 }
 
 restore_ipv6_sysctl_backup() {
-    local backup="$1"
+    local backup="$1" key value rc=0
     if [[ -f "$backup/had-config" ]]; then
-        cp -a "$backup/ipv6.conf" "$IPV6_SYSCTL_FILE"
+        cp -a "$backup/ipv6.conf" "$IPV6_SYSCTL_FILE" || return 1
     else
-        rm -f "$IPV6_SYSCTL_FILE"
+        rm -f "$IPV6_SYSCTL_FILE" || return 1
     fi
-    sysctl --system >/dev/null 2>&1 || true
+    # Restore runtime values too, even when no managed file existed before.
+    while IFS='=' read -r key value; do
+        [[ -n "$key" ]] || continue
+        sysctl -w "$key=$value" >/dev/null 2>&1 || rc=1
+    done < "$backup/runtime.conf"
+    return "$rc"
 }
 
 set_ipv6_enabled() {
@@ -2657,8 +2746,12 @@ set_ipv6_enabled() {
     backup="$BACKUP_ROOT/ipv6-$(date +%Y%m%d-%H%M%S)-$RANDOM"
     mkdir -p "$backup"
     chmod 700 "$backup"
+    sysctl -a 2>/dev/null | awk -F ' = ' '
+        $1 ~ /^net\.ipv6\.conf\.[^.]+\.disable_ipv6$/ {print $1 "=" $2}
+    ' > "$backup/runtime.conf"
+    [[ -s "$backup/runtime.conf" ]] || { say "❌ 无法备份 IPv6 内核运行状态。"; return 1; }
     if [[ -f "$IPV6_SYSCTL_FILE" ]]; then
-        cp -a "$IPV6_SYSCTL_FILE" "$backup/ipv6.conf"
+        cp -a "$IPV6_SYSCTL_FILE" "$backup/ipv6.conf" || return 1
         printf '1\n' > "$backup/had-config"
     fi
 
@@ -2681,7 +2774,7 @@ net.ipv6.conf.lo.disable_ipv6 = $value
 EOF
     chmod 600 "$IPV6_SYSCTL_FILE"
 
-    if ! sysctl --system >/dev/null 2>&1; then
+    if ! sysctl -p "$IPV6_SYSCTL_FILE" >/dev/null 2>&1; then
         say "❌ 应用 IPv6 sysctl 配置失败，正在恢复。"
         restore_ipv6_sysctl_backup "$backup"
         return 1

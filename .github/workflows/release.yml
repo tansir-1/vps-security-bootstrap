@@ -40,9 +40,10 @@ jobs:
           bash -n install.sh
           bash -n tools/build-copy-paste.sh
           bash -n tests/smoke.sh
-          shellcheck -x -S error             vps-security.sh             install.sh             tools/build-copy-paste.sh             tests/smoke.sh
+          shellcheck -x -S warning             vps-security.sh             install.sh             tools/build-copy-paste.sh             tests/smoke.sh
           bash tests/smoke.sh
           python3 tests/static_safety.py
+          python3 tests/regression.py
           git diff --check
 
       - name: Rebuild distribution
@@ -59,6 +60,7 @@ jobs:
           VERSION="$(tr -d '[:space:]' < VERSION)"
           cp vps-security.sh "vps-security-v${VERSION}.sh"
           cp dist/vps-security-copy-paste.txt "vps-security-v${VERSION}-copy-paste.txt"
+          sha256sum "vps-security-v${VERSION}.sh" "vps-security-v${VERSION}-copy-paste.txt" > SHA256SUMS
 
       - name: Create or update GitHub Release
         env:
@@ -81,4 +83,4 @@ jobs:
             gh release create "$TAG"               --title "VPS Security Bootstrap ${TAG}"               --notes-file "$NOTES"
           fi
 
-          gh release upload "$TAG"             "vps-security-v${VERSION}.sh"             "vps-security-v${VERSION}-copy-paste.txt"             dist/SHA256SUMS             --clobber
+          gh release upload "$TAG"             "vps-security-v${VERSION}.sh"             "vps-security-v${VERSION}-copy-paste.txt"             SHA256SUMS

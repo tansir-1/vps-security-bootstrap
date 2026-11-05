@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import hashlib, re
+import base64
+import gzip
+import hashlib
+import re
 root = Path(__file__).resolve().parents[1]
 src = (root / 'vps-security.sh').read_text(encoding='utf-8')
 installer = (root / 'install.sh').read_text(encoding='utf-8')
@@ -36,7 +39,14 @@ assert '为避免误删你原本手工创建的规则' in src
 assert 'had-no-authorized-keys' in src
 assert 'mktemp /tmp/vps-security-bootstrap.' in installer
 assert 'mktemp /tmp/vps-security-bootstrap-v$VERSION.' in builder
-m = re.search(r'EXPECTED_SHA256="([0-9a-f]{64})"', installer)
+m = re.search(r'\b' + re.escape(version) + r'\) EXPECTED_SHA256="([0-9a-f]{64})"', installer)
 assert m
 assert m.group(1) == hashlib.sha256((root / 'vps-security.sh').read_bytes()).hexdigest()
+distribution = (root / 'dist/vps-security-copy-paste.txt').read_text(encoding='utf-8')
+payload = distribution.split("<<'VPSSEC_PAYLOAD'\n", 1)[1].split('\nVPSSEC_PAYLOAD\n', 1)[0]
+assert gzip.decompress(base64.b64decode(payload)) == (root / 'vps-security.sh').read_bytes()
+for line in (root / 'dist/SHA256SUMS').read_text(encoding='utf-8').splitlines():
+    digest, name = line.split(None, 1)
+    name = name[1:] if name.startswith('*') else name
+    assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
 print('static safety tests passed')

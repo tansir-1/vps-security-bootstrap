@@ -27,7 +27,10 @@ TARGET="\$(mktemp /tmp/vps-security-bootstrap-v$VERSION.XXXXXX.sh)"
 cleanup() {
     rm -f "\$PAYLOAD" "\$TARGET"
 }
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 cat > "\$PAYLOAD" <<'VPSSEC_PAYLOAD'
 EOF2
 cat "$TMP_B64" >> "$OUT"
@@ -54,6 +57,6 @@ bash "$TARGET"
 )
 EOF2
 chmod 644 "$OUT"
-(cd "$ROOT" && sha256sum vps-security.sh dist/vps-security-copy-paste.txt > dist/SHA256SUMS)
+(cd "$ROOT" && sha256sum -t vps-security.sh dist/vps-security-copy-paste.txt > dist/SHA256SUMS)
 echo "Built: $OUT"
 echo "Source SHA256: $EXPECTED_SHA256"

@@ -14,30 +14,45 @@
 
 **不锁 SSH、不误关业务端口、不静默覆盖已有 DENY、关键改动可验证/可回滚。**
 
-当前版本：`v10.1.0`
+当前版本：`v10.1.1`。
+
+本次修复说明见 [安全检查记录](docs/SECURITY-REVIEW.md)，实际测试范围及真机验收步骤见 [测试文档](docs/TESTING.md)。正式发布附件与校验清单位于 [v10.1.1 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.1)。
 
 ## 快速开始
 
-### 推荐：一键运行固定版本 v10.1.0
+### 推荐：一键运行固定版本 v10.1.1
 
-适合大多数用户，脚本会下载正式 Release、校验 SHA256、执行 Bash 语法检查，通过后才启动。
+适合大多数用户，脚本会下载正式 Release、校验固定 SHA256、执行 Bash 语法检查，通过后才启动。
 
 root 用户：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.1/install.sh | bash
 ```
 
 普通 sudo 用户：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.1/install.sh | sudo bash
 ```
 
 ### 直接运行 Release 主脚本
 
 ```bash
-curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.0/vps-security-v10.1.0.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
+# Run from a private temporary directory; verify the published filenames.
+(
+set -euo pipefail
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cd "$work"
+base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.1
+curl -fLO "$base/vps-security-v10.1.1.sh"
+curl -fLO "$base/vps-security-v10.1.1-copy-paste.txt"
+curl -fLO "$base/SHA256SUMS"
+sha256sum -c SHA256SUMS
+bash -n vps-security-v10.1.1.sh
+sudo bash vps-security-v10.1.1.sh
+)
 ```
 
 ### 下载源码后检查再运行
@@ -156,15 +171,17 @@ Copy-Paste 版本会：
 
 ```text
 备份
-→ 修改 SSH
 → 放行新端口
+→ 修改 SSH
 → 校验 sshd 配置
 → 确认新端口监听
 → 新窗口登录测试
 → 成功后提交
 ```
 
-如果失败，可恢复到修改前状态。
+失败时会尝试从事务快照恢复。端口变更尚未确认时，禁止用关闭密码或 KeepAlive 操作覆盖事务。关闭密码认证前必须完成第 5 项密钥验证，关闭后还需再次执行第 5 项提交或回滚。
+
+本工具保留原有 `PermitRootLogin` 策略，不会主动将 `no` 或受限 root 策略改为允许密钥登录。**没有独立定时自动回滚**，输入断开会退出工具；断线后请通过厂商控制台恢复。
 
 > 修改 SSH 或防火墙时，仍建议保留当前已登录 SSH 窗口，或 IDC / VNC / Web Console / Serial Console 等救援入口。
 
@@ -180,11 +197,17 @@ Copy-Paste 版本会：
 
 冲突会显示给用户，由用户明确选择。
 
+## firewalld 安全边界
+
+未运行的 firewalld 不会被自动启动，以免默认规则在放行 SSH/业务端口之前生效。请通过厂商控制台用 `firewall-offline-cmd` 配置正确的 zone、接口及端口，再启动服务并重试。
+
+修改同时维护运行时和永久端口规则，不执行全量 reload。存在 rich-rule 拒绝规则或规则无法读取时会保守停止，需人工复核。SSH 回滚仅撤销事务新增的放行；UFW 采用配置快照恢复。
+
 ## Docker 说明
 
 Docker 发布端口可能绕过普通 UFW `INPUT` 链。
 
-v10.1.0 默认以**审计**为主：
+v10.1.1 默认以**审计**为主：
 
 - 查看公网映射
 - 查看绑定地址
@@ -222,7 +245,7 @@ v10.1.0 默认以**审计**为主：
 
 ## 安全审计
 
-只读安全检查不会修改系统配置。
+只读安全检查不会修改系统配置或安装依赖，可在没有 TTY 的环境执行；仍会在工具数据目录写入报告、日志和状态。缺少依赖时以非零码退出。
 
 主要检查：
 
@@ -254,7 +277,7 @@ INFO
 
 ## 支持范围
 
-主要面向：
+可识别的目标平台（不代表各镜像均已实测；本次验证范围见测试文档）：
 
 - Debian 11 / 12 / 13
 - Ubuntu 20.04 / 22.04 / 24.04 / 26.04
@@ -263,7 +286,7 @@ INFO
 - Fedora
 - Amazon Linux 2 / 2023
 
-需要 systemd；Alpine、OpenWrt 等非 systemd 系统暂不支持。
+需要 Bash 4+、systemd 和 util-linux（flock）；Alpine、OpenWrt 等非 systemd 系统暂不支持。
 
 不同 IDC 镜像可能存在定制 SSH、防火墙、cloud-init 或网络配置。首次在新环境使用时建议保留厂商控制台救援入口。
 
@@ -281,6 +304,8 @@ Smoke Test：
 
 ```bash
 bash tests/smoke.sh
+python3 tests/regression.py
+python3 tests/static_safety.py
 ```
 
 重新生成 Copy-Paste 发行文件：
@@ -301,9 +326,12 @@ dist/SHA256SUMS
 每次 Push / Pull Request 自动执行：
 
 - Bash 语法检查
-- ShellCheck 高优先级错误检查
+- ShellCheck warning 及以上级别检查
+- 行为回归与静态安全检查
 - Smoke Test
 - Copy-Paste 发行文件一致性检查
+
+下载的校验清单只能验证与该发布内容一致；安装器内置哈希依赖安装器/标签本身可信，不等同于独立签名。
 
 ## 安全说明
 
@@ -323,7 +351,7 @@ dist/SHA256SUMS
 当前正式版本：
 
 ```text
-v10.1.0
+v10.1.1
 ```
 
 生产环境建议优先使用固定 Release，而不是直接运行 `main` 分支。
@@ -346,22 +374,24 @@ Core principles:
 
 **Do not lock out SSH. Do not accidentally close business ports. Do not silently overwrite existing DENY rules. Make risky changes verifiable and recoverable.**
 
-Current version: `v10.1.0`
+Current version: `v10.1.1`.
+
+See the [security review](docs/SECURITY-REVIEW.md) and [test scope / VM checklist](docs/TESTING.md). Download published assets and checksums from the [v10.1.1 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.1).
 
 ## Quick Start
 
-### Recommended: run the pinned v10.1.0 release
+### Recommended: run the pinned v10.1.1 release
 
 For root users:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.1/install.sh | bash
 ```
 
 For sudo users:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.1/install.sh | sudo bash
 ```
 
 The installer downloads the official Release asset, verifies the pinned SHA256, runs `bash -n`, and starts the tool only when all checks pass.
@@ -369,7 +399,20 @@ The installer downloads the official Release asset, verifies the pinned SHA256, 
 ### Run the Release script directly
 
 ```bash
-curl -fsSL https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.0/vps-security-v10.1.0.sh -o /tmp/vps-security.sh && bash /tmp/vps-security.sh
+# Run from a private temporary directory; verify the published filenames.
+(
+set -euo pipefail
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cd "$work"
+base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.1
+curl -fLO "$base/vps-security-v10.1.1.sh"
+curl -fLO "$base/vps-security-v10.1.1-copy-paste.txt"
+curl -fLO "$base/SHA256SUMS"
+sha256sum -c SHA256SUMS
+bash -n vps-security-v10.1.1.sh
+sudo bash vps-security-v10.1.1.sh
+)
 ```
 
 ### Download, inspect, and run the source
@@ -482,15 +525,17 @@ Typical flow:
 
 ```text
 backup
-→ change SSH
 → allow new port
+→ change SSH
 → validate sshd configuration
 → confirm the new port is listening
 → verify from a new SSH session
 → commit
 ```
 
-If verification fails, the previous state can be restored.
+Failed operations attempt to restore their transaction snapshots. Pending SSH transactions cannot be overwritten by password or KeepAlive changes. Verify key login in step 5 before disabling passwords, then verify again in step 5 to commit or roll back.
+
+The existing `PermitRootLogin` policy is preserved. There is **no independent timed automatic rollback**; a disconnected session may require the provider console.
 
 > Keep an existing SSH session or an IDC / VNC / Web Console / Serial Console recovery path available when changing SSH or firewall settings.
 
@@ -506,11 +551,17 @@ the tool will not silently remove the DENY rule and replace it with ALLOW, even 
 
 Conflicts require an explicit user decision.
 
+## firewalld safety boundaries
+
+An inactive firewalld daemon is not automatically started. Preconfigure zones, interfaces, SSH and business ports using `firewall-offline-cmd` from the provider console, then start it and retry.
+
+Port changes update both runtime and permanent rules without a full reload. Rich-rule rejection or unreadable rules cause a conservative stop for manual review. SSH rollback removes only transaction-added allows; UFW uses configuration snapshots.
+
 ## Docker Notes
 
 Docker-published ports may bypass normal UFW `INPUT` handling.
 
-v10.1.0 keeps Docker firewall handling audit-first:
+v10.1.1 keeps Docker firewall handling audit-first:
 
 - Public mappings
 - Bind addresses
@@ -528,7 +579,7 @@ IPv6 is not disabled by default. Main-menu option 8 can explicitly enable or dis
 - Uses `/etc/sysctl.d/99-vps-security-ipv6.conf`
 - Backs up an existing managed configuration
 - Verifies the effective kernel state
-- Restores the previous configuration on failure
+- Restores saved configuration and kernel values on failure; lost addresses/routes may require network reconfiguration
 
 Disabling local IPv6 does not release an IPv6 allocation at the cloud provider.
 
@@ -550,7 +601,7 @@ Runtime data is mainly stored under:
 
 ## Read-Only Security Audit
 
-The read-only audit does not modify system configuration.
+The read-only audit does not modify system configuration or install dependencies. It supports non-TTY execution, but writes reports, logs and state under the tool data directory. Missing dependencies cause a nonzero exit.
 
 Checks include:
 
@@ -582,7 +633,7 @@ INFO
 
 ## Supported Systems
 
-Primarily intended for:
+Recognized target platforms (not a claim of VM coverage; see the testing document):
 
 - Debian 11 / 12 / 13
 - Ubuntu 20.04 / 22.04 / 24.04 / 26.04
@@ -591,7 +642,7 @@ Primarily intended for:
 - Fedora
 - Amazon Linux 2 / 2023
 
-systemd is required. Non-systemd systems such as Alpine and OpenWrt are not currently supported.
+Bash 4+, systemd and util-linux (flock) are required. Non-systemd systems such as Alpine and OpenWrt are not currently supported.
 
 IDC images may contain customized SSH, firewall, cloud-init, or networking settings. Keep access to the provider recovery console when using the tool on a new environment for the first time.
 
@@ -609,6 +660,8 @@ Smoke test:
 
 ```bash
 bash tests/smoke.sh
+python3 tests/regression.py
+python3 tests/static_safety.py
 ```
 
 Rebuild the Copy-Paste distribution:
@@ -629,7 +682,8 @@ dist/SHA256SUMS
 Every Push / Pull Request automatically runs:
 
 - Bash syntax checks
-- High-priority ShellCheck checks
+- ShellCheck warning and error checks
+- Behavioral regressions and static safety checks
 - Smoke tests
 - Copy-Paste distribution consistency checks
 
@@ -648,10 +702,10 @@ Do not publish the following in Issues, screenshots, logs, or chats:
 
 ## Release
 
-Current stable release:
+Current release:
 
 ```text
-v10.1.0
+v10.1.1
 ```
 
 For production servers, use a pinned Release rather than the moving `main` branch.

@@ -14,6 +14,7 @@ bash -n vps-security.sh
 bash -n install.sh
 bash -n tools/build-copy-paste.sh
 bash tests/smoke.sh
+python3 tests/regression.py
 python3 tests/static_safety.py
 bash tools/build-copy-paste.sh
 ```
@@ -21,5 +22,7 @@ bash tools/build-copy-paste.sh
 如安装了 ShellCheck：
 
 ```bash
-shellcheck -x -S error vps-security.sh install.sh tools/build-copy-paste.sh tests/smoke.sh
+shellcheck -x -S warning vps-security.sh install.sh tools/build-copy-paste.sh tests/smoke.sh
 ```
+
+行为测试与真机测试的边界见 [docs/TESTING.md](docs/TESTING.md)。修改主脚本后须同步安装器对应版本的固定哈希，并重新生成 dist；发布附件不可覆盖原版本。

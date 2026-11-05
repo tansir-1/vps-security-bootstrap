@@ -1,207 +1,39 @@
-# GitHub 傻瓜式部署教程
+# GitHub 更新与发布
 
-## 1. 仓库命名
+本次准备的源码为 **10.1.1（待发布）**。本地修改不会自动更新 GitHub 或线上 Release。
 
-Repository name：
+## 发布前
 
-```text
-vps-security-bootstrap
-```
+1. 在具有真实上游历史的克隆中创建修复分支，检查完整 diff。不要将下载 ZIP 后的本地基线提交强推到 main。
+2. 按 [测试文档](docs/TESTING.md) 完成自动检查与 Linux VM 验收。mock 测试不能替代真实 SSH/防火墙验证。
+3. 确认 VERSION、主脚本、安装器默认版本、README 和 release-notes/v10.1.1.md 一致。
+4. 修改主脚本后运行 `sha256sum vps-security.sh`，更新 install.sh 中对应版本的固定哈希。不要修改已发布旧版本的哈希。
+5. 运行 `bash tools/build-copy-paste.sh`，提交主脚本、安装器、dist、测试、工作流和文档。英文内容包含在 README 中，没有独立 README_EN.md。
+6. 提交 PR 并等待 CI 通过，合并后确认发布的是经过验证的提交。
 
-Description：
+## 创建版本
 
-```text
-Safe interactive systemd VPS bootstrap & hardening tool for Debian/Ubuntu and RHEL/Fedora families, with SSH rollback, firewall protection, business-port preflight, Docker/IPv6 audit and security reports.
-```
-
-Visibility：
-
-```text
-Public
-```
-
-License：
-
-```text
-MIT
-```
-
-## 2. 创建仓库
-
-GitHub 右上角 `+` → `New repository`。
-
-填写：
-
-```text
-Owner：你的 GitHub 用户名
-Repository name：vps-security-bootstrap
-Description：上面的 Description
-Public：勾选
-```
-
-如果你准备直接上传本项目完整文件夹：
-
-- `Add a README file`：不要勾也可以，因为包里已经有 README.md
-- `.gitignore`：None
-- License：可以不在网页重复创建，因为包里已经有 LICENSE
-
-点击 `Create repository`。
-
-## 3. 上传文件
-
-仓库页面：
-
-```text
-Add file
-→ Upload files
-```
-
-把本项目目录里的文件和文件夹上传，保持原目录结构：
-
-```text
-.github/
-dist/
-tests/
-tools/
-CHANGELOG.md
-CONTRIBUTING.md
-LICENSE
-README.md
-README_EN.md
-SECURITY.md
-VERSION
-vps-security.sh
-```
-
-Commit message：
-
-```text
-Initial release: VPS Security Bootstrap v10.0.0
-```
-
-## 4. 设置 About
-
-仓库右侧 `About` → 齿轮。
-
-Description：
-
-```text
-Safe multi-distribution systemd VPS bootstrap & security hardening tool.
-```
-
-Topics：
-
-```text
-vps
-linux
-security
-hardening
-bash
-debian
-ubuntu
-ssh
-ufw
-fail2ban
-server-security
-docker
-sysadmin
-devops
-```
-
-## 5. 检查 Actions
-
-打开：
-
-```text
-Actions
-```
-
-等待 CI。
-
-必须看到绿色通过后再发布 Release。
-
-## 6. 创建 v10.0.0 Release
-
-仓库右侧：
-
-```text
-Releases
-→ Create a new release
-```
-
-Tag：
-
-```text
-v10.0.0
-```
-
-Release title：
-
-```text
-VPS Security Bootstrap v10.0.0
-```
-
-建议 Release Notes：
-
-```text
-首个正式 GitHub 公开版本。
-
-Highlights:
-- 新 VPS / 已部署业务服务器通用安全开荒
-- SSH 高位端口事务式修改与完整回滚
-- ED25519 密钥登录
-- UFW / firewalld 管理
-- 已有 DENY 保护
-- Fail2ban / 自动安全更新
-- Docker 公网映射审计
-- IPv6 防火墙审计
-- 只读安全检查
-- Copy-Paste SHA256 完整性验证
-```
-
-附件建议上传：
-
-```text
-vps-security.sh
-dist/vps-security-copy-paste.txt
-dist/SHA256SUMS
-```
-
-最后点击 `Publish release`。
-
-## 7. README 中替换用户名
-
-打开 `README.md`，找到：
-
-```text
-YOUR_GITHUB_USERNAME
-```
-
-替换为你的真实 GitHub 用户名。
-
-例如用户名是 `example`：
+在验证过的上游提交上执行：
 
 ```bash
-curl -fLO https://raw.githubusercontent.com/example/vps-security-bootstrap/main/vps-security.sh
+git tag -a v10.1.1 -m "VPS Security Bootstrap v10.1.1"
+git push origin v10.1.1
 ```
 
-## 8. 后续版本命名
-
-Bug 修复：
+标签触发 Release 工作流：检查版本、语法、ShellCheck、smoke、行为回归、静态约束及发行文件一致性，再准备附件：
 
 ```text
-v10.0.1
-v10.0.2
+vps-security-v10.1.1.sh
+vps-security-v10.1.1-copy-paste.txt
+SHA256SUMS
 ```
 
-新增功能：
+Release 的 SHA256SUMS 使用实际附件名；仓库 dist/SHA256SUMS 使用源码相对路径，两者用途不同。
 
-```text
-v10.1.0
-```
+不要覆盖已发布附件或移动标签。上传不再使用 `--clobber`；同名附件存在会导致上传失败。修复应升级补丁版本，而非替换用户已经固定哈希的内容。
 
-大规模不兼容更新：
+## 发布后验收
 
-```text
-v11.0.0
-```
+在新的私有临时目录中下载三个附件，运行 `sha256sum -c SHA256SUMS`，检查 `--version`。在可销毁 VM 中验证固定标签的 install.sh。附件确实可下载后，再将 README 与发布说明中的待发布状态更新为正式发布。
+
+安装器验证内置哈希，但首次执行安装器时仍需信任其源码及标签；哈希校验不等同于独立数字签名。
