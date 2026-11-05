@@ -14,7 +14,13 @@
 
 **不锁 SSH、不误关业务端口、不静默覆盖已有 DENY、关键改动可验证/可回滚。**
 
-当前版本：`v10.1.1`。
+当前正式版本：`v10.1.1`。`main` 源码为 `v10.1.2` UI 更新，尚未发布新 Release；安装器默认仍使用已发布的 v10.1.1。
+
+### SSH 终端界面预览
+
+v10.1.2 仅整理显示：统一标题、分组状态、菜单、提示与颜色；宽窗口双列、窄窗口单列。所有原有菜单编号、默认确认和功能模块保持一致。[显示设置与验证范围](docs/TERMINAL-UI.md)。
+
+![终端界面演示，使用样例数据](docs/images/terminal-ui-80.png)
 
 本次修复说明见 [安全检查记录](docs/SECURITY-REVIEW.md)，实际测试范围及真机验收步骤见 [测试文档](docs/TESTING.md)。正式发布附件与校验清单位于 [v10.1.1 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.1)。
 
@@ -374,7 +380,9 @@ Core principles:
 
 **Do not lock out SSH. Do not accidentally close business ports. Do not silently overwrite existing DENY rules. Make risky changes verifiable and recoverable.**
 
-Current version: `v10.1.1`.
+Current stable release: `v10.1.1`. The `main` source is `v10.1.2`, an unreleased terminal UI update. The installer still defaults to the published v10.1.1 release.
+
+The UI update groups statuses, aligns menus, adds optional semantic colors, and stacks columns on narrow terminals. Original menu numbers, confirmations and functional modules are preserved. See [terminal UI settings and checks](docs/TERMINAL-UI.md).
 
 See the [security review](docs/SECURITY-REVIEW.md) and [test scope / VM checklist](docs/TESTING.md). Download published assets and checksums from the [v10.1.1 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.1).
 

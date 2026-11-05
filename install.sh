@@ -27,6 +27,7 @@ trap 'exit 129' HUP
 chmod 700 "$TARGET"
 
 case "$VERSION" in
+    10.1.2) EXPECTED_SHA256="3a7bf7844d2043acb59bf8402d6790af5caaf1b0ec19fa60d12f73f21a322390" ;;
     10.1.1) EXPECTED_SHA256="41f35fbabbf530acbf675b656b40a4fde0c0178554951d9189e7571afcd11648" ;;
     10.1.0) EXPECTED_SHA256="7eff3046de6fd3c91739c40475fcbd1379e9d7d9aa4ca357edbc2e97c89d29d0" ;;
     *) echo "ERROR: No pinned SHA256 is available in this installer for $TAG."; exit 1 ;;

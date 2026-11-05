@@ -11,6 +11,7 @@ bash -n tools/build-copy-paste.sh
 shellcheck -x -S warning vps-security.sh install.sh tools/build-copy-paste.sh tests/smoke.sh
 bash tests/smoke.sh
 python3 tests/regression.py
+python3 tests/ui.py
 python3 tests/static_safety.py
 bash tools/build-copy-paste.sh
 git diff --exit-code -- dist/

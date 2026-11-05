@@ -22,8 +22,8 @@ assert 'allow_ssh_port_in_selinux()' in src
 assert 'policycoreutils-python-utils' in src
 assert 'choose_full_step_action()' in src
 assert 'FULL_SKIP_PREFLIGHT="1"' in src
-assert '1. 执行（默认）' in src
-assert '2. 跳过' in src
+assert 'ui_item 1 "执行（默认）"' in src
+assert 'ui_item 2 "跳过"' in src
 assert 'ipv6_toggle_menu()' in src
 assert 'net.ipv6.conf.all.disable_ipv6 = $value' in src
 assert 'restore_ipv6_sysctl_backup()' in src

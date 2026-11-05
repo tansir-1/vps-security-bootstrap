@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VPS Security Bootstrap v10.1.1
+# VPS Security Bootstrap v10.1.2
 # 面向常用 systemd VPS Linux：全新 VPS 开荒 + 已部署业务服务器安全加固。
 # 核心原则：不锁 SSH、不误关业务端口、不自动覆盖已有 DENY、关键改动可验证/可回滚。
 (
@@ -8,7 +8,7 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 umask 077
 
-VERSION="10.1.1"
+VERSION="10.1.2"
 APP_NAME="VPS Security Bootstrap v${VERSION}"
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 CLI_AUDIT=0
@@ -98,11 +98,166 @@ elif ! { exec 3</dev/tty 4>/dev/tty; } 2>/dev/null; then
     exit 1
 fi
 
-say() { printf '%s\n' "$*" >&4; }
+# Terminal presentation stays on fd 4; reports and command stdout remain plain.
+ui_init() {
+    UI_RESET=""; UI_BOLD=""; UI_ACCENT=""; UI_OK=""; UI_WARN=""; UI_FAIL=""; UI_MUTED=""
+    UI_COLOR=0
+    if [[ "${CLI_AUDIT:-0}" != 1 && ! ${NO_COLOR+x} && "${TERM:-dumb}" != dumb ]]; then
+        case "${VPS_UI_COLOR:-auto}" in
+            always) UI_COLOR=1 ;;
+            auto) [[ -t 4 ]] && UI_COLOR=1 ;;
+        esac
+    fi
+    if [[ "$UI_COLOR" == 1 ]]; then
+        UI_RESET=$'\033[0m'; UI_BOLD=$'\033[1m'; UI_ACCENT=$'\033[36m'
+        UI_OK=$'\033[32m'; UI_WARN=$'\033[33m'; UI_FAIL=$'\033[31m'; UI_MUTED=$'\033[2m'
+    fi
+    ui_size
+}
+
+ui_size() {
+    local width="${COLUMNS:-80}"
+    if [[ -t 4 && "${TERM:-dumb}" != dumb ]] && command -v tput >/dev/null 2>&1; then
+        width="$(tput cols 2>/dev/null || printf 80)"
+    fi
+    [[ "$width" =~ ^[0-9]{1,3}$ ]] || width=80
+    width=$((10#$width))
+    (( width >= 24 )) || width=24
+    (( width <= 88 )) || width=88
+    UI_WIDTH="$width"
+}
+
+ui_text() {
+    local text="$*"
+    text="${text//✅/[OK]}"; text="${text//❌/[FAIL]}"
+    text="${text//⚠️/[WARN]}"; text="${text//⚠/[WARN]}"
+    text="${text//ℹ️/[INFO]}"; text="${text//ℹ/[INFO]}"
+    # Strip terminal controls from host/process/user-supplied text. Never use %b.
+    if [[ "$text" == *[$'\001'-$'\037'$'\177']* ]]; then
+        printf '%s' "$text" | LC_ALL=C tr -d '\000-\010\013-\037\177'
+    else
+        printf '%s' "$text"
+    fi
+}
+
+ui_write() {
+    local tone="$1" text="$2" color=""
+    case "$tone" in
+        accent) color="${UI_ACCENT:-}" ;; ok) color="${UI_OK:-}" ;;
+        warn) color="${UI_WARN:-}" ;; fail) color="${UI_FAIL:-}" ;;
+        muted) color="${UI_MUTED:-}" ;;
+    esac
+    printf '%s%s%s\n' "$color" "$text" "${UI_RESET:-}" >&4
+}
+
+say() {
+    local text tone=""
+    text="$(ui_text "$*")"
+    case "$text" in
+        '[OK]'*) tone=ok ;; '[WARN]'*) tone=warn ;;
+        '[FAIL]'*) tone=fail ;; '[INFO]'*) tone=accent ;;
+    esac
+    ui_write "$tone" "$text"
+}
+
+ui_rule() {
+    local line
+    printf -v line '%*s' "${UI_WIDTH:-80}" ''
+    ui_write muted "${line// /-}"
+}
+
+ui_heading() {
+    say
+    printf '%s%s  %s%s\n' "${UI_BOLD:-}" "${UI_ACCENT:-}" "$(ui_text "$*")" "${UI_RESET:-}" >&4
+    ui_rule
+}
+
+ui_section() {
+    printf '%s%s  %s%s\n' "${UI_BOLD:-}" "${UI_ACCENT:-}" "$(ui_text "$*")" "${UI_RESET:-}" >&4
+}
+
+ui_item() {
+    local key="$1" label="$2"
+    printf '  %s[%2s]%s %s\n' "${UI_ACCENT:-}" "$key" "${UI_RESET:-}" "$(ui_text "$label")" >&4
+}
+
+ui_value() {
+    printf '  %s  %s\n' "$(ui_text "$1")" "$(ui_text "$2")" >&4
+}
+
+ui_display_width() {
+    # Decode UTF-8 bytes without changing the program's C locale or requiring
+    # Python/wcwidth on a minimal VPS. CJK/fullwidth glyphs occupy two cells.
+    local LC_ALL=C text="$1" offset=0 width=0 byte code count index next
+    while (( offset < ${#text} )); do
+        printf -v byte '%d' "'${text:offset:1}"
+        count=1; code="$byte"
+        if (( byte >= 194 && byte <= 223 )); then count=2; code=$((byte & 31))
+        elif (( byte >= 224 && byte <= 239 )); then count=3; code=$((byte & 15))
+        elif (( byte >= 240 && byte <= 244 )); then count=4; code=$((byte & 7))
+        fi
+        for ((index=1; index<count; index++)); do
+            printf -v next '%d' "'${text:offset+index:1}"
+            if (( next < 128 || next > 191 )); then count=1; code="$byte"; break; fi
+            code=$(( (code << 6) | (next & 63) ))
+        done
+        if (( (code >= 0x300 && code <= 0x36f) || (code >= 0xfe00 && code <= 0xfe0f) || code == 0x200d )); then
+            :
+        elif (( (code >= 0x1100 && code <= 0x115f) || code == 0x2329 || code == 0x232a ||
+                (code >= 0x2e80 && code <= 0xa4cf && code != 0x303f) ||
+                (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) ||
+                (code >= 0xfe10 && code <= 0xfe19) || (code >= 0xfe30 && code <= 0xfe6f) ||
+                (code >= 0xff00 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6) ||
+                (code >= 0x1f300 && code <= 0x1faff) || (code >= 0x20000 && code <= 0x3fffd) )); then
+            width=$((width+2))
+        else
+            width=$((width+1))
+        fi
+        offset=$((offset+count))
+    done
+    printf '%s' "$width"
+}
+
+ui_pair() {
+    local left right left_width right_width column
+    left="$(ui_text "$1")"; right="$(ui_text "$2")"
+    left_width="$(ui_display_width "$left")"; right_width="$(ui_display_width "$right")"
+    column=$(( (${UI_WIDTH:-80}-6)/2 ))
+    if (( ${UI_WIDTH:-80} >= 76 && left_width <= column && right_width <= column )); then
+        printf '  %s%*s  %s\n' "$left" "$((column-left_width))" '' "$right" >&4
+    else
+        say "  $left"
+        say "  $right"
+    fi
+}
+
+ui_menu_pair() {
+    local first="$1" left second="$3" right left_width right_width column
+    left="$(ui_text "$2")"; right="$(ui_text "$4")"
+    left_width="$(ui_display_width "$left")"; right_width="$(ui_display_width "$right")"
+    column=$(( (${UI_WIDTH:-80}-6)/2 ))
+    if (( ${UI_WIDTH:-80} >= 76 && left_width+5 <= column && right_width+5 <= column )); then
+        printf '  %s[%2s]%s %s%*s  %s[%2s]%s %s\n' \
+            "${UI_ACCENT:-}" "$first" "${UI_RESET:-}" "$left" "$((column-left_width-5))" '' \
+            "${UI_ACCENT:-}" "$second" "${UI_RESET:-}" "$right" >&4
+    else
+        ui_item "$first" "$left"; ui_item "$second" "$right"
+    fi
+}
+
+ui_clear() {
+    ui_size
+    if [[ "${UI_COLOR:-0}" == 1 && -t 4 && "${VPS_UI_CLEAR:-1}" != 0 ]]; then
+        printf '\033[2J\033[H' >&4
+    else
+        say
+    fi
+}
+
 ask() {
     local __var="$1"
     shift
-    printf '%s' "$*" >&4
+    printf '\n%s  > %s%s' "${UI_ACCENT:-}" "$(ui_text "$*")" "${UI_RESET:-}" >&4
     IFS= read -r "${__var?}" <&3 || { say "输入已断开，停止操作。"; exit 2; }
 }
 confirm_y() {
@@ -129,6 +284,8 @@ choose_num() {
 }
 pause() { local _x; say; ask _x "按回车继续..."; }
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "$LOG_FILE"; }
+
+ui_init
 
 OS_ID=""
 OS_ID_LIKE=""
@@ -481,8 +638,8 @@ run_step() {
         say "步骤：$title"
         say "返回码：$rc"
         say "日志：$LOG_FILE"
-        say "1. 重试"
-        say "0. 返回"
+        ui_item 1 "重试"
+        ui_item 0 "返回"
         choose_num choice "请选择 [1/0]：" "1 0" "0"
         [[ "$choice" == "1" ]] || return "$rc"
     done
@@ -629,9 +786,7 @@ snapshot_preflight_state() {
 
 business_port_preflight() {
     say
-    say "=================================================="
-    say "开荒前业务端口保护检查"
-    say "=================================================="
+    ui_heading "开荒前业务端口保护检查"
     say "规则：SSH 自动保护；已识别业务自动保护；本机监听忽略；systemd-resolved 5355 自动忽略；未知公网监听逐项询问。"
     say "说明：选择 n 只代表不加入自动保护名单，不会主动删除已有防火墙规则。"
     say
@@ -735,9 +890,9 @@ business_port_preflight() {
     save_state
 
     say
-    say "--------------------------------------------------"
+    ui_rule
     say "业务保护检查完成"
-    say "--------------------------------------------------"
+    ui_rule
     say "保护名单：$PROTECTED_PORTS_FILE"
     say "开荒前快照：$dir"
     say "已加入保护的协议/端口：$count 项"
@@ -777,9 +932,9 @@ ufw_safe_allow() {
             say "用途：$label"
             say "本工具不会自动删除已有 DENY。"
             if [[ "$required" == "1" ]]; then
-                say "1. 保持 DENY，并取消本次端口变更（推荐）"
-                say "2. 删除简单 DENY 并改为 ALLOW"
-                say "0. 取消"
+                ui_item 1 "保持 DENY，并取消本次端口变更（推荐）"
+                ui_item 2 "删除简单 DENY 并改为 ALLOW"
+                ui_item 0 "取消"
                 choose_num choice "请选择 [默认1]：" "1 2 0" "1"
                 case "$choice" in
                     2)
@@ -795,9 +950,9 @@ ufw_safe_allow() {
                     *) return 2 ;;
                 esac
             else
-                say "1. 保持 DENY（推荐）"
-                say "2. 删除简单 DENY 并改为 ALLOW"
-                say "0. 跳过"
+                ui_item 1 "保持 DENY（推荐）"
+                ui_item 2 "删除简单 DENY 并改为 ALLOW"
+                ui_item 0 "跳过"
                 choose_num choice "请选择 [默认1]：" "1 2 0" "1"
                 if [[ "$choice" == "2" ]]; then
                     ufw delete deny "$spec/$proto" >/dev/null 2>&1 || true
@@ -1066,28 +1221,23 @@ status_reboot_required() {
     reboot_required && printf '需要重启' || printf '当前无需重启'
 }
 show_security_status() {
-    say "当前安全状态："
-    say "1.  系统更新：$(status_system_update)"
-    say "2.  root 密码：$(status_root_password)"
-    say "3.  SSH 端口：$(status_ssh_port)"
-    say "4.  ED25519 公钥：$(status_ed25519_key)"
-    say "5.  密钥登录测试：$(status_key_test)"
-    say "6.  SSH 密码认证：$(status_password_auth)"
-    say "7.  主机防火墙：$(status_firewall)"
-    say "8.  Fail2ban：$(status_fail2ban)"
-    say "9.  自动安全更新：$(status_auto_updates)"
-    say "10. 公网监听：$(status_public_listeners)"
-    say "    业务端口保护：$(status_preflight)"
-    say "    Docker：$(status_docker)"
-    say "    Docker 防火墙：$(status_docker_firewall)"
-    say "    IPv6：$(status_ipv6)"
-    say "    IPv6 防火墙：$(status_ipv6_firewall)"
-    say "    SSH KeepAlive：$(status_keepalive)"
-    say "11. 安全检查报告：$(status_report)"
-    say "    只读安全审计：$(status_audit)"
-    say "12. 配置备份：$(status_backup)"
-    say "    端口防火墙管理：$(status_port_manager)"
-    say "    系统重启：$(status_reboot_required)"
+    say
+    ui_section "登录与认证"
+    ui_pair "SSH 端口：$(status_ssh_port)" "SSH 密码认证：$(status_password_auth)"
+    ui_pair "ED25519 公钥：$(status_ed25519_key)" "root 密码：$(status_root_password)"
+    ui_pair "密钥登录测试：$(status_key_test)" "SSH KeepAlive：$(status_keepalive)"
+    say
+    ui_section "网络与系统"
+    ui_pair "主机防火墙：$(status_firewall)" "Fail2ban：$(status_fail2ban)"
+    ui_pair "系统更新：$(status_system_update)" "自动安全更新：$(status_auto_updates)"
+    ui_pair "公网监听：$(status_public_listeners)" "业务端口保护：$(status_preflight)"
+    ui_pair "Docker：$(status_docker)" "Docker 防火墙：$(status_docker_firewall)"
+    ui_value "IPv6 防火墙：" "$(status_ipv6_firewall)"
+    say
+    ui_section "报告与维护"
+    ui_pair "安全检查报告：$(status_report)" "只读安全审计：$(status_audit)"
+    ui_pair "配置备份：$(status_backup)" "端口防火墙管理：$(status_port_manager)"
+    ui_value "系统重启：" "$(status_reboot_required)"
 }
 backup_ssh() {
     local dir
@@ -1484,8 +1634,8 @@ remove_old_ssh_firewall_rule() {
                 say
                 say "旧 SSH 端口 $old/tcp 仍存在 ALLOW 规则。"
                 say "为避免误删你原本手工创建的规则，本工具不会静默删除。"
-                say '1. 保留旧端口规则（默认）'
-                say '2. 删除简单 ALLOW 规则'
+                ui_item 1 '保留旧端口规则（默认）'
+                ui_item 2 '删除简单 ALLOW 规则'
                 choose_num choice '请选择 [默认1]：' '1 2' '1'
                 if [[ "$choice" == '2' ]]; then
                     ufw delete allow "$old/tcp" >/dev/null 2>&1 || true
@@ -1500,8 +1650,8 @@ remove_old_ssh_firewall_rule() {
             if firewall-cmd --zone="$zone" --query-port="$old/tcp" >/dev/null 2>&1; then
                 say
                 say "旧 SSH 端口 $old/tcp 仍在 firewalld zone=$zone 中放行。"
-                say '1. 保留旧端口规则（默认）'
-                say '2. 删除旧端口放行'
+                ui_item 1 '保留旧端口规则（默认）'
+                ui_item 2 '删除旧端口放行'
                 choose_num choice '请选择 [默认1]：' '1 2' '1'
                 if [[ "$choice" == '2' ]]; then
                     firewall-cmd --zone="$zone" --remove-port="$old/tcp" >/dev/null 2>&1 || true
@@ -1563,9 +1713,7 @@ detect_business_services() {
 
 step1_update_system() {
     say
-    say "=================================================="
-    say "1. 更新系统"
-    say "=================================================="
+    ui_heading "1. 更新系统"
     say "系统：$OS_PRETTY_NAME"
     say "包管理器：$PKG_MANAGER"
     say
@@ -1576,9 +1724,9 @@ step1_update_system() {
         say "检测到本机已有业务："
         while IFS= read -r x; do [[ -n "$x" ]] && say "  - $x"; done <<< "$business"
         say
-        say "1. 安全更新模式（推荐；Debian 避免 needrestart 自动重启业务服务）"
-        say "2. 正常系统更新"
-        say "0. 跳过本次更新"
+        ui_item 1 "安全更新模式（推荐；Debian 避免 needrestart 自动重启业务服务）"
+        ui_item 2 "正常系统更新"
+        ui_item 0 "跳过本次更新"
         choose_num choice "请选择 [默认1]：" "1 2 0" "1"
         case "$choice" in
             0) say "已跳过系统更新。"; return 0 ;;
@@ -1607,9 +1755,7 @@ step1_update_system() {
 }
 step2_change_root_password() {
     say
-    say "=================================================="
-    say "2. 修改 root 密码"
-    say "=================================================="
+    ui_heading "2. 修改 root 密码"
     say "下面会让你输入两次新的 root 密码，输入时不会显示字符。"
     passwd root </dev/tty
     log "root 密码已修改"
@@ -1618,9 +1764,7 @@ step2_change_root_password() {
 
 step3_random_ssh_port() {
     say
-    say "=================================================="
-    say "3. 随机 SSH 高位端口"
-    say "=================================================="
+    ui_heading "3. 随机 SSH 高位端口"
 
     local current new input locked server_ip txn rc
     current="$(get_primary_ssh_port)"
@@ -1736,9 +1880,7 @@ step3_random_ssh_port() {
 }
 step4_add_ed25519_key() {
     say
-    say "=================================================="
-    say "4. 添加 ED25519 公钥"
-    say "=================================================="
+    ui_heading "4. 添加 ED25519 公钥"
     say "只粘贴【公钥】，不要粘贴私钥。"
     say "公钥应以 ssh-ed25519 开头，并且完整内容必须是一整行。"
     say
@@ -1793,9 +1935,7 @@ step4_add_ed25519_key() {
 
 step5_test_key() {
     say
-    say "=================================================="
-    say "5. 新窗口测试密钥"
-    say "=================================================="
+    ui_heading "5. 新窗口测试密钥"
 
     local port server_ip choice old new txn
     port="$(get_primary_ssh_port)"
@@ -1816,9 +1956,9 @@ step5_test_key() {
     say "  用户：root"
     say "  认证：ED25519 私钥"
     say
-    say "1. 密钥登录成功，提交 SSH 修改"
-    say "2. 登录失败，完整回滚 SSH 修改"
-    say "0. 暂不处理，返回"
+    ui_item 1 "密钥登录成功，提交 SSH 修改"
+    ui_item 2 "登录失败，完整回滚 SSH 修改"
+    ui_item 0 "暂不处理，返回"
     say
 
     while true; do
@@ -1856,9 +1996,7 @@ step5_test_key() {
 }
 step6_disable_password_auth() {
     say
-    say "=================================================="
-    say "6. 关闭 SSH 密码认证"
-    say "=================================================="
+    ui_heading "6. 关闭 SSH 密码认证"
 
     local port txn eff
     port="$(get_primary_ssh_port)"
@@ -1926,8 +2064,8 @@ firewalld_allow_safe() {
     if firewalld_rich_conflict "$port" "$proto"; then
         say "⚠️ firewalld 存在 rich-rule reject/drop 或规则不可读取，无法安全确认 $port/$proto。"
         say "本工具不会自动删除复杂拒绝规则。"
-        say "1. 保持拒绝规则（推荐）"
-        say "0. 跳过"
+        ui_item 1 "保持拒绝规则（推荐）"
+        ui_item 0 "跳过"
         choose_num choice "请选择 [默认1]：" "1 0" "1"
         return 2
     fi
@@ -1941,9 +2079,7 @@ firewalld_allow_safe() {
 
 step7_configure_ufw() {
     say
-    say "=================================================="
-    say "7. 安装/配置主机防火墙"
-    say "=================================================="
+    ui_heading "7. 安装/配置主机防火墙"
 
     ensure_business_preflight || return 1
     local backend ports p zone proto port class procs binds
@@ -2036,9 +2172,7 @@ step7_configure_ufw() {
 }
 step8_install_fail2ban() {
     say
-    say '=================================================='
-    say '8. 安装 Fail2ban'
-    say '=================================================='
+    ui_heading '8. 安装 Fail2ban'
     local port
     port="$(get_primary_ssh_port)"
     pkg_refresh || return 1
@@ -2064,9 +2198,7 @@ step8_install_fail2ban() {
 
 step9_enable_auto_updates() {
     say
-    say "=================================================="
-    say "9. 开启自动安全更新"
-    say "=================================================="
+    ui_heading "9. 开启自动安全更新"
 
     if [[ "$OS_FAMILY" == "debian" ]]; then
         pkg_refresh || return 1
@@ -2103,9 +2235,7 @@ EOF
 
 step10_scan_public_ports() {
     say
-    say "=================================================="
-    say "10. 扫描公网监听端口"
-    say "=================================================="
+    ui_heading "10. 扫描公网监听端口"
     say "下面列出所有非回环 TCP/UDP 监听；127.0.0.1 / ::1 不视为公网业务端口。"
     say
     local line proto state _recvq _sendq local_ep _peer_ep rest bind
@@ -2131,9 +2261,7 @@ step10_scan_public_ports() {
 
 step11_security_report() {
     say
-    say "=================================================="
-    say "11. 输出最终安全检查报告"
-    say "=================================================="
+    ui_heading "11. 输出最终安全检查报告"
 
     local report
     report="$REPORT_DIR/security-report-$(date +%Y%m%d-%H%M%S).txt"
@@ -2228,9 +2356,7 @@ step11_security_report() {
 }
 step12_save_info_and_backup() {
     say
-    say "=================================================="
-    say "12. 保存端口和配置备份位置"
-    say "=================================================="
+    ui_heading "12. 保存端口和配置备份位置"
 
     local backup port server_ip
     backup="$(backup_ssh)"
@@ -2432,9 +2558,7 @@ step13_port_firewall_manager() {
     b="$(detect_firewall_backend)"
     if (( ready == 2 )) || [[ "$b" == "nftables" || "$b" == "iptables" ]]; then
         say
-        say '=================================================='
-        say "自定义 $b（只读）"
-        say '=================================================='
+        ui_heading "自定义 $b（只读）"
         if [[ "$b" == 'nftables' ]]; then
             nft list ruleset >&4 2>/dev/null || true
         else
@@ -2450,13 +2574,11 @@ step13_port_firewall_manager() {
     while true; do
         b="$(detect_firewall_backend)"
         say
-        say "=================================================="
-        say "防火墙端口管理（当前：$b）"
-        say "=================================================="
-        say "1. 放行端口"
-        say "2. 关闭入站端口（不会停止对应服务）"
-        say "3. 查看当前规则"
-        say "0. 返回"
+        ui_heading "防火墙端口管理（当前：$b）"
+        ui_item 1 "放行端口"
+        ui_item 2 "关闭入站端口（不会停止对应服务）"
+        ui_item 3 "查看当前规则"
+        ui_item 0 "返回"
         say
         choose_num c "请选择：" "1 2 3 0" "0"
         case "$c" in
@@ -2642,18 +2764,16 @@ show_docker_user_chain() {
 docker_security_menu() {
     local c
     while true; do
-        clear
-        say "=================================================="
-        say "Docker 安全检查（默认只读）"
-        say "=================================================="
+        ui_clear
+        ui_heading "Docker 安全检查（默认只读）"
         say "状态：$(status_docker)"
         say "DOCKER-USER：$(status_docker_firewall)"
         say
-        say "1. 查看 Docker 端口映射"
-        say "2. 查看 DOCKER-USER"
-        say "3. 备份 Docker/iptables/nftables 当前状态"
-        say "4. 查看 Docker 防火墙说明"
-        say "0. 返回"
+        ui_item 1 "查看 Docker 端口映射"
+        ui_item 2 "查看 DOCKER-USER"
+        ui_item 3 "备份 Docker/iptables/nftables 当前状态"
+        ui_item 4 "查看 Docker 防火墙说明"
+        ui_item 0 "返回"
         choose_num c "请选择：" "1 2 3 4 0" "0"
         case "$c" in
             1) print_docker_mappings; pause ;;
@@ -2677,9 +2797,9 @@ docker_security_menu() {
 ssh_keepalive_manager() {
     local c port locked txn
     say "当前 SSH KeepAlive：$(status_keepalive)"
-    say "1. 开启推荐配置（60 秒心跳，3 次失败）"
-    say "2. 关闭本工具管理的 KeepAlive"
-    say "0. 返回"
+    ui_item 1 "开启推荐配置（60 秒心跳，3 次失败）"
+    ui_item 2 "关闭本工具管理的 KeepAlive"
+    ui_item 0 "返回"
     choose_num c "请选择：" "1 2 0" "0"
     [[ "$c" != "0" ]] || return 0
     port="$(get_primary_ssh_port)"; locked=0; sshd_password_auth_disabled && locked=1
@@ -2802,13 +2922,11 @@ ipv6_toggle_menu() {
     local c
     while true; do
         say
-        say "=================================================="
-        say "IPv6 开启 / 关闭"
-        say "=================================================="
+        ui_heading "IPv6 开启 / 关闭"
         say "当前状态：$(status_ipv6)"
-        say "1. 开启 IPv6"
-        say "2. 关闭 IPv6"
-        say "0. 返回"
+        ui_item 1 "开启 IPv6"
+        ui_item 2 "关闭 IPv6"
+        ui_item 0 "返回"
         choose_num c "请选择：" "1 2 0" "0"
         case "$c" in
             1)
@@ -2849,17 +2967,15 @@ cleanup_history() {
 advanced_menu() {
     local c
     while true; do
-        clear
-        say "=================================================="
-        say "高级设置"
-        say "=================================================="
-        say "1. SSH KeepAlive"
-        say "2. IPv6 防火墙检查 / 修复"
-        say "3. Docker 防火墙高级检查"
-        say "4. 查看备份"
-        say "5. 查看操作日志"
-        say "6. 历史报告 / 备份清理"
-        say "0. 返回"
+        ui_clear
+        ui_heading "高级设置"
+        ui_item 1 "SSH KeepAlive"
+        ui_item 2 "IPv6 防火墙检查 / 修复"
+        ui_item 3 "Docker 防火墙高级检查"
+        ui_item 4 "查看备份"
+        ui_item 5 "查看操作日志"
+        ui_item 6 "历史报告 / 备份清理"
+        ui_item 0 "返回"
         choose_num c "请选择：" "1 2 3 4 5 6 0" "0"
         case "$c" in
             1) ssh_keepalive_manager; pause ;;
@@ -2876,11 +2992,11 @@ advanced_menu() {
 choose_full_step_action() {
     local __var="$1" title="$2" choice
     say
-    say "--------------------------------------------------"
+    ui_rule
     say "下一步：$title"
-    say "1. 执行（默认）"
-    say "2. 跳过"
-    say "0. 停止通用流程并返回"
+    ui_item 1 "执行（默认）"
+    ui_item 2 "跳过"
+    ui_item 0 "停止通用流程并返回"
     choose_num choice "请选择 [默认1]：" "1 2 0" "1"
     printf -v "$__var" '%s' "$choice"
 }
@@ -2988,24 +3104,22 @@ run_full_setup() {
 single_menu() {
     local c rc
     while true; do
-        clear
-        say "=================================================="
-        say " $APP_NAME"
-        say " —— 单项安全优化"
-        say "=================================================="
-        say "1. 更新系统"
-        say "2. 修改 root 密码"
-        say "3. 随机 SSH 高位端口"
-        say "4. 添加 ED25519 公钥"
-        say "5. 新窗口测试密钥"
-        say "6. 关闭 SSH 密码认证"
-        say "7. 安装/配置主机防火墙"
-        say "8. 安装 Fail2ban"
-        say "9. 开启自动安全更新"
-        say "10. 扫描公网监听端口"
-        say "11. 输出最终安全检查报告"
-        say "12. 保存端口和配置备份位置"
-        say "0. 返回主菜单"
+        ui_clear
+        ui_heading "单项安全优化"
+        ui_write muted "  $APP_NAME"
+        ui_item 1 "更新系统"
+        ui_item 2 "修改 root 密码"
+        ui_item 3 "随机 SSH 高位端口"
+        ui_item 4 "添加 ED25519 公钥"
+        ui_item 5 "新窗口测试密钥"
+        ui_item 6 "关闭 SSH 密码认证"
+        ui_item 7 "安装/配置主机防火墙"
+        ui_item 8 "安装 Fail2ban"
+        ui_item 9 "开启自动安全更新"
+        ui_item 10 "扫描公网监听端口"
+        ui_item 11 "输出最终安全检查报告"
+        ui_item 12 "保存端口和配置备份位置"
+        ui_item 0 "返回主菜单"
         say
         choose_num c "请输入数字：" "1 2 3 4 5 6 7 8 9 10 11 12 0" "0"
         case "$c" in
@@ -3028,9 +3142,7 @@ single_menu() {
 
 reboot_server() {
     say
-    say "=================================================="
-    say "重启服务器"
-    say "=================================================="
+    ui_heading "重启服务器"
     reboot_required && say "系统状态：当前更新提示需要重启。" || say "系统状态：当前没有重启提示。"
     say "执行重启后当前 SSH 会正常断开，服务器启动完成后重新连接。"
     say
@@ -3046,36 +3158,28 @@ reboot_server() {
 }
 
 show_header() {
-    say "=================================================="
-    say "              $APP_NAME"
-    say "=================================================="
-    say "系统：$(get_os_pretty)"
-    say "包管理器：$PKG_MANAGER"
-    say "主机：$(hostname)"
-    say "IPv4：$(get_ipv4)"
-    say "IPv6：$(status_ipv6)"
-    say "运行时间：$(get_uptime_short)"
-    say
+    ui_heading "$APP_NAME"
+    ui_pair "系统：$(get_os_pretty)" "包管理器：$PKG_MANAGER"
+    ui_pair "主机：$(hostname)" "运行时间：$(get_uptime_short)"
+    ui_pair "IPv4：$(get_ipv4)" "IPv6：$(status_ipv6)"
 }
 
 main_menu() {
     local c
     while true; do
-        clear
+        ui_clear
         show_header
-        say "1. 通用安全开荒"
-        say "2. 单项安全优化"
-        say "3. 业务端口保护预检 / 重新扫描"
-        say "4. 防火墙端口管理"
-        say "5. 只读安全检查"
-        say "6. Docker 安全检查"
-        say "7. 高级设置"
-        say "8. IPv6 开启 / 关闭"
-        say "9. 重启服务器"
-        say "0. 退出工具"
-        say
         show_security_status
         say
+        ui_section "操作菜单"
+        ui_rule
+        ui_menu_pair 1 "通用安全开荒" 2 "单项安全优化"
+        ui_menu_pair 3 "业务端口保护预检 / 重新扫描" 4 "防火墙端口管理"
+        ui_menu_pair 5 "只读安全检查" 6 "Docker 安全检查"
+        ui_menu_pair 7 "高级设置" 8 "IPv6 开启 / 关闭"
+        ui_menu_pair 9 "重启服务器" 0 "退出工具"
+        ui_rule
+        ui_write muted "  输入数字后回车；0 仅退出工具。"
         choose_num c "请选择：" "1 2 3 4 5 6 7 8 9 0" "0"
         case "$c" in
             1) run_full_setup ;;

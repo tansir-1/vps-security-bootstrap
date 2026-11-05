@@ -35,6 +35,9 @@ jobs:
       - name: Behavioral regression tests
         run: python3 tests/regression.py
 
+      - name: Terminal UI tests
+        run: python3 tests/ui.py
+
       - name: Static safety tests
         run: python3 tests/static_safety.py
 

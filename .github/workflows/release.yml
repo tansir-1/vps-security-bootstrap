@@ -44,6 +44,7 @@ jobs:
           bash tests/smoke.sh
           python3 tests/static_safety.py
           python3 tests/regression.py
+          python3 tests/ui.py
           git diff --check
 
       - name: Rebuild distribution
