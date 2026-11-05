@@ -14,7 +14,7 @@
 
 **不锁 SSH、不误关业务端口、不静默覆盖已有 DENY、关键改动可验证/可回滚。**
 
-当前正式版本：`v10.1.1`。`main` 源码为 `v10.1.2` UI 更新，尚未发布新 Release；安装器默认仍使用已发布的 v10.1.1。
+当前正式版本：`v10.1.2`。默认安装器已同步为此版本，包含新的 SSH 终端界面。
 
 ### SSH 终端界面预览
 
@@ -22,24 +22,24 @@ v10.1.2 仅整理显示：统一标题、分组状态、菜单、提示与颜色
 
 ![终端界面演示，使用样例数据](docs/images/terminal-ui-80.png)
 
-本次修复说明见 [安全检查记录](docs/SECURITY-REVIEW.md)，实际测试范围及真机验收步骤见 [测试文档](docs/TESTING.md)。正式发布附件与校验清单位于 [v10.1.1 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.1)。
+本次修复说明见 [安全检查记录](docs/SECURITY-REVIEW.md)，实际测试范围及真机验收步骤见 [测试文档](docs/TESTING.md)。正式发布附件与校验清单位于 [v10.1.2 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.2)。
 
 ## 快速开始
 
-### 推荐：一键运行固定版本 v10.1.1
+### 推荐：一键运行固定版本 v10.1.2
 
 适合大多数用户，脚本会下载正式 Release、校验固定 SHA256、执行 Bash 语法检查，通过后才启动。
 
 root 用户：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.2/install.sh | bash
 ```
 
 普通 sudo 用户：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.1/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.2/install.sh | sudo bash
 ```
 
 ### 直接运行 Release 主脚本
@@ -51,13 +51,13 @@ set -euo pipefail
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
-base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.1
-curl -fLO "$base/vps-security-v10.1.1.sh"
-curl -fLO "$base/vps-security-v10.1.1-copy-paste.txt"
+base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.2
+curl -fLO "$base/vps-security-v10.1.2.sh"
+curl -fLO "$base/vps-security-v10.1.2-copy-paste.txt"
 curl -fLO "$base/SHA256SUMS"
 sha256sum -c SHA256SUMS
-bash -n vps-security-v10.1.1.sh
-sudo bash vps-security-v10.1.1.sh
+bash -n vps-security-v10.1.2.sh
+sudo bash vps-security-v10.1.2.sh
 )
 ```
 
@@ -213,7 +213,7 @@ Copy-Paste 版本会：
 
 Docker 发布端口可能绕过普通 UFW `INPUT` 链。
 
-v10.1.1 默认以**审计**为主：
+v10.1.2 默认以**审计**为主：
 
 - 查看公网映射
 - 查看绑定地址
@@ -357,7 +357,7 @@ dist/SHA256SUMS
 当前正式版本：
 
 ```text
-v10.1.1
+v10.1.2
 ```
 
 生产环境建议优先使用固定 Release，而不是直接运行 `main` 分支。
@@ -380,26 +380,26 @@ Core principles:
 
 **Do not lock out SSH. Do not accidentally close business ports. Do not silently overwrite existing DENY rules. Make risky changes verifiable and recoverable.**
 
-Current stable release: `v10.1.1`. The `main` source is `v10.1.2`, an unreleased terminal UI update. The installer still defaults to the published v10.1.1 release.
+Current stable release: `v10.1.2`. The default installer now downloads this version, including the new SSH terminal UI.
 
 The UI update groups statuses, aligns menus, adds optional semantic colors, and stacks columns on narrow terminals. Original menu numbers, confirmations and functional modules are preserved. See [terminal UI settings and checks](docs/TERMINAL-UI.md).
 
-See the [security review](docs/SECURITY-REVIEW.md) and [test scope / VM checklist](docs/TESTING.md). Download published assets and checksums from the [v10.1.1 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.1).
+See the [security review](docs/SECURITY-REVIEW.md) and [test scope / VM checklist](docs/TESTING.md). Download published assets and checksums from the [v10.1.2 Release](https://github.com/tansir-1/vps-security-bootstrap/releases/tag/v10.1.2).
 
 ## Quick Start
 
-### Recommended: run the pinned v10.1.1 release
+### Recommended: run the pinned v10.1.2 release
 
 For root users:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.2/install.sh | bash
 ```
 
 For sudo users:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.1/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.2/install.sh | sudo bash
 ```
 
 The installer downloads the official Release asset, verifies the pinned SHA256, runs `bash -n`, and starts the tool only when all checks pass.
@@ -413,13 +413,13 @@ set -euo pipefail
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
-base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.1
-curl -fLO "$base/vps-security-v10.1.1.sh"
-curl -fLO "$base/vps-security-v10.1.1-copy-paste.txt"
+base=https://github.com/tansir-1/vps-security-bootstrap/releases/download/v10.1.2
+curl -fLO "$base/vps-security-v10.1.2.sh"
+curl -fLO "$base/vps-security-v10.1.2-copy-paste.txt"
 curl -fLO "$base/SHA256SUMS"
 sha256sum -c SHA256SUMS
-bash -n vps-security-v10.1.1.sh
-sudo bash vps-security-v10.1.1.sh
+bash -n vps-security-v10.1.2.sh
+sudo bash vps-security-v10.1.2.sh
 )
 ```
 
@@ -569,7 +569,7 @@ Port changes update both runtime and permanent rules without a full reload. Rich
 
 Docker-published ports may bypass normal UFW `INPUT` handling.
 
-v10.1.1 keeps Docker firewall handling audit-first:
+v10.1.2 keeps Docker firewall handling audit-first:
 
 - Public mappings
 - Bind addresses
@@ -713,7 +713,7 @@ Do not publish the following in Issues, screenshots, logs, or chats:
 Current release:
 
 ```text
-v10.1.1
+v10.1.2
 ```
 
 For production servers, use a pinned Release rather than the moving `main` branch.

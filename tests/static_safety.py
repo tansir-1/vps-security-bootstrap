@@ -10,6 +10,8 @@ installer = (root / 'install.sh').read_text(encoding='utf-8')
 builder = (root / 'tools' / 'build-copy-paste.sh').read_text(encoding='utf-8')
 version = (root / 'VERSION').read_text(encoding='utf-8').strip()
 assert f'VERSION="{version}"' in src
+installer_default = re.search(r'VERSION="\$\{VPS_SECURITY_VERSION:-([^}]+)\}"', installer)
+assert installer_default and installer_default.group(1) == version, 'Installer default must match VERSION'
 assert 'detect_platform()' in src
 assert 'local ID="" ID_LIKE="" VERSION_ID="" PRETTY_NAME="" VERSION=""' in src
 assert 'debian|ubuntu' in src

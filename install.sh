@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO="tansir-1/vps-security-bootstrap"
-VERSION="${VPS_SECURITY_VERSION:-10.1.1}"
+VERSION="${VPS_SECURITY_VERSION:-10.1.2}"
 TAG="v${VERSION}"
 ASSET="vps-security-v${VERSION}.sh"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"

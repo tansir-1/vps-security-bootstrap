@@ -2,7 +2,7 @@
 
 ## Supported version
 
-当前维护：v10.x；当前修复版本 v10.1.1，发布附件见 GitHub Releases。
+当前维护：v10.x；当前版本 v10.1.2，发布附件见 GitHub Releases。
 
 ## Reporting a vulnerability
 
