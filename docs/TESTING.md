@@ -13,6 +13,7 @@ bash tests/smoke.sh
 python3 tests/regression.py
 python3 tests/ui.py
 python3 tests/static_safety.py
+python3 tests/entrypoint.py
 bash tools/build-copy-paste.sh
 git diff --exit-code -- dist/
 git diff --check

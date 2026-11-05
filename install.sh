@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Permanent public entrypoint: keep main/install.sh compatible across releases.
+# Maintenance contract: AGENTS.md and docs/INSTALLATION.md.
 REPO="tansir-1/vps-security-bootstrap"
 VERSION="${VPS_SECURITY_VERSION:-10.1.2}"
 TAG="v${VERSION}"

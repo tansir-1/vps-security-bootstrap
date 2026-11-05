@@ -1,6 +1,6 @@
 # Contributing
 
-感谢贡献。提交 PR 前请：
+感谢贡献。修改前先阅读 [AGENTS.md](AGENTS.md)；安装、升级或发布相关改动还须遵循 [永久入口契约](docs/INSTALLATION.md)。按用户约定检查通过后直接更新 main，不新建分支或 PR。
 
 1. 不在源码中写入真实 IP、密码、私钥、Token 或个人域名。
 2. 保持脚本兼容 Debian/Ubuntu（apt）与 RHEL/Fedora 系（dnf/yum）的 systemd 环境。
@@ -17,6 +17,7 @@ bash tests/smoke.sh
 python3 tests/regression.py
 python3 tests/ui.py
 python3 tests/static_safety.py
+python3 tests/entrypoint.py
 bash tools/build-copy-paste.sh
 ```
 

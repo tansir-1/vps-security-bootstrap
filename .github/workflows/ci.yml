@@ -41,6 +41,9 @@ jobs:
       - name: Static safety tests
         run: python3 tests/static_safety.py
 
+      - name: Permanent entrypoint contract
+        run: python3 tests/entrypoint.py
+
       - name: Rebuild copy-paste distribution
         run: |
           bash tools/build-copy-paste.sh

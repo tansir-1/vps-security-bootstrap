@@ -26,23 +26,25 @@ v10.1.2 仅整理显示：统一标题、分组状态、菜单、提示与颜色
 
 ## 快速开始
 
-### 推荐：一键运行固定版本 v10.1.2
+### 永久固定命令（以后升级无需更换）
 
-适合大多数用户，脚本会下载正式 Release、校验固定 SHA256、执行 Bash 语法检查，通过后才启动。
+保存下面对应权限的这一条命令即可。以后修复、优化或升级，命令始终不变；维护者更新安装器内部版本，安装器下载推荐的正式 Release、校验固定 SHA256 和 Bash 语法，通过后才启动。
 
 root 用户：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.2/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/main/install.sh | bash
 ```
 
 普通 sudo 用户：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.2/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/main/install.sh | sudo bash
 ```
 
-### 直接运行 Release 主脚本
+入口兼容性属于用户明确要求，记录在 [AGENTS.md](AGENTS.md) 和 [安装与发布契约](docs/INSTALLATION.md)，并由 CI 自动检查。已有旧脚本不会自行更新；需要新版时先输入 `0` 退出旧工具，再执行同一条永久命令，无需重新执行开荒步骤。
+
+### 可选：固定版本下载（排障 / 复现）
 
 ```bash
 # Run from a private temporary directory; verify the published filenames.
@@ -72,7 +74,7 @@ less vps-security.sh
 sudo bash vps-security.sh
 ```
 
-> 生产服务器建议优先使用固定 Release 版本，不要直接依赖持续变化的 `main` 分支。
+> 生产服务器推荐使用上面的永久安装入口。`main/install.sh` 维护默认正式版本及固定哈希；直接下载 `main/vps-security.sh` 属于源码检查/开发方式。
 
 ## Netcatty / Xshell / FinalShell
 
@@ -360,7 +362,7 @@ dist/SHA256SUMS
 v10.1.2
 ```
 
-生产环境建议优先使用固定 Release，而不是直接运行 `main` 分支。
+生产环境推荐使用永久入口，由安装器选择已发布的正式 Release 并验证；固定版本下载用于排障或复现。
 
 ## License
 
@@ -388,23 +390,25 @@ See the [security review](docs/SECURITY-REVIEW.md) and [test scope / VM checklis
 
 ## Quick Start
 
-### Recommended: run the pinned v10.1.2 release
+### Permanent command — unchanged across upgrades
 
 For root users:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.2/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/main/install.sh | bash
 ```
 
 For sudo users:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/v10.1.2/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tansir-1/vps-security-bootstrap/main/install.sh | sudo bash
 ```
 
-The installer downloads the official Release asset, verifies the pinned SHA256, runs `bash -n`, and starts the tool only when all checks pass.
+Keep using the same command after every fix, optimization or upgrade. Maintainers update the installer’s default stable version and pinned SHA256; the installer downloads the official Release asset, verifies it, runs `bash -n`, and starts the tool only after validation.
 
-### Run the Release script directly
+The user’s permanent entrypoint requirement is documented in [AGENTS.md](AGENTS.md) and the [installation contract](docs/INSTALLATION.md), with CI checks. Exit an older running tool with `0`, then run the same permanent command to get the current stable version. Existing downloaded scripts do not update themselves, and upgrading the tool does not require reapplying hardening steps.
+
+### Optional: pinned-version download for troubleshooting / reproduction
 
 ```bash
 # Run from a private temporary directory; verify the published filenames.
@@ -432,7 +436,7 @@ less vps-security.sh
 sudo bash vps-security.sh
 ```
 
-> For production servers, a pinned Release is recommended instead of relying directly on the changing `main` branch.
+> Use the permanent installer for production. `main/install.sh` selects a stable Release with a pinned checksum; downloading `main/vps-security.sh` directly is a source-inspection/development workflow.
 
 ## Netcatty / Xshell / FinalShell
 
@@ -716,7 +720,7 @@ Current release:
 v10.1.2
 ```
 
-For production servers, use a pinned Release rather than the moving `main` branch.
+For production, use the permanent installer, which selects and verifies a stable Release. Pinned-version downloads remain available for troubleshooting.
 
 ## License
 
